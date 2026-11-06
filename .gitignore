@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+
+# Type checkers / linters / tests
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local P0 reports / runtime data
+data/
+!data/.gitkeep
+
+
+# Models / weights
+*.gguf
+*.safetensors
+*.gguf.partial
+Models/
+Models/.hf_cache/
+
+# Runtime / logs / local caches
+*.log
+*.log.err
+benchmarks/**/logs/
+**/__pycache__/
+.cache/
+**/.cache/
+
+# Local binaries / build artifacts under runtime
+data/P1_1/runtime/
+*.exe
+*.dll
+*.pyd
+
+# Vendored notebooks that may embed API tokens
+src/hivi/inference/airllm-main/air_llm/tests/test_notebooks/

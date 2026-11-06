@@ -1,0 +1,430 @@
+{
+  "scope": "colibri_tps_27b",
+  "started_at": "2026-11-05T22:27:56.397590+00:00",
+  "settings": {
+    "ctx": 4096,
+    "ngen": 64,
+    "temp": 0.1,
+    "prompt": "Write a continuous technical explanation of how transformer attention works. Use plain prose only. Do not stop early; fill the full token budget.",
+    "method": "coli serve --no-think + streaming chat; decode_tps=(n-1)/(wall-ttft) when TTFT known else e2e",
+    "port": 18765
+  },
+  "models": {
+    "A": {
+      "status": "COMPLETED",
+      "name": "Unsloth-Qwen3.8-27B-UD-Q5_K_M",
+      "quant": "Q5_K_M",
+      "path": "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\unsloth\\qwen3.8-27b-q5_k_m\\Qwen3.8-27B-UD-Q5_K_M.colibri",
+      "serve": {
+        "ready": true,
+        "model_id": "qwen3.8-27b-colibri",
+        "load_wait_s": 21.106,
+        "log": "C:\\Users\\mevad\\Desktop\\HIVI\\benchmarks\\27b_comparison\\logs\\colibri_tps\\A_serve.log",
+        "pid": 33056,
+        "engine_load_s": 15.9,
+        "rss_gb": 18.49,
+        "cuda": true
+      },
+      "warmup": {
+        "ok": true,
+        "ttft_s": 3.747900100017432,
+        "wall_s": 24.804,
+        "completion_tokens": 64,
+        "prompt_tokens": 79,
+        "finish_reason": "length",
+        "error": null,
+        "decode_tps": 2.992,
+        "e2e_tps": 2.58,
+        "mode": "stream",
+        "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros"
+      },
+      "measured": [
+        {
+          "ok": true,
+          "ttft_s": 4.493660899985116,
+          "wall_s": 26.195,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.903,
+          "e2e_tps": 2.443,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 1,
+          "gpu_before": {
+            "util": 16.0,
+            "mem": 6301.0,
+            "temp": 42.0,
+            "power": 8.22
+          },
+          "gpu_after": {
+            "util": 34.0,
+            "mem": 6296.0,
+            "temp": 44.0,
+            "power": 12.72
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 3.83793889998924,
+          "wall_s": 25.372,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.926,
+          "e2e_tps": 2.522,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 2,
+          "gpu_before": {
+            "util": 16.0,
+            "mem": 6297.0,
+            "temp": 43.0,
+            "power": 8.28
+          },
+          "gpu_after": {
+            "util": 28.0,
+            "mem": 6346.0,
+            "temp": 45.0,
+            "power": 12.41
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.349654499994358,
+          "wall_s": 26.549,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.838,
+          "e2e_tps": 2.411,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 3,
+          "gpu_before": {
+            "util": 17.0,
+            "mem": 6336.0,
+            "temp": 45.0,
+            "power": 8.5
+          },
+          "gpu_after": {
+            "util": 24.0,
+            "mem": 6307.0,
+            "temp": 45.0,
+            "power": 12.35
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.4006548000033945,
+          "wall_s": 26.552,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.844,
+          "e2e_tps": 2.41,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 4,
+          "gpu_before": {
+            "util": 16.0,
+            "mem": 6308.0,
+            "temp": 44.0,
+            "power": 8.35
+          },
+          "gpu_after": {
+            "util": 23.0,
+            "mem": 6308.0,
+            "temp": 45.0,
+            "power": 12.36
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 3.8525971999915782,
+          "wall_s": 26.535,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.777,
+          "e2e_tps": 2.412,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 5,
+          "gpu_before": {
+            "util": 15.0,
+            "mem": 6308.0,
+            "temp": 45.0,
+            "power": 8.32
+          },
+          "gpu_after": {
+            "util": 24.0,
+            "mem": 6308.0,
+            "temp": 46.0,
+            "power": 12.46
+          }
+        }
+      ],
+      "summary": {
+        "decode_tps": {
+          "median": 2.844,
+          "min": 2.777,
+          "max": 2.926,
+          "n": 5
+        },
+        "e2e_tps": {
+          "median": 2.412,
+          "min": 2.41,
+          "max": 2.522,
+          "n": 5
+        },
+        "ttft_s": {
+          "median": 4.35,
+          "min": 3.838,
+          "max": 4.494,
+          "n": 5
+        },
+        "wall_s": {
+          "median": 26.535,
+          "min": 25.372,
+          "max": 26.552,
+          "n": 5
+        },
+        "completion_tokens": {
+          "median": 64,
+          "min": 64,
+          "max": 64,
+          "n": 5
+        },
+        "n_ok": 5,
+        "n_fail": 0,
+        "peak_vram_mib": 6346.0
+      },
+      "pre_gpu": {
+        "util": 65.0,
+        "mem": 0.0,
+        "temp": 38.0,
+        "power": 8.76
+      },
+      "post_gpu": {
+        "util": 15.0,
+        "mem": 6308.0,
+        "temp": 45.0,
+        "power": 8.36
+      }
+    },
+    "B": {
+      "status": "COMPLETED",
+      "name": "0bserverx-RVN-Heretic-Q6_K",
+      "quant": "Q6_K",
+      "path": "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\0bserverx\\qwen3.8-27b-heretic-abliterated-uncensored-q6_k\\RVN-Q6_K.colibri",
+      "serve": {
+        "ready": true,
+        "model_id": "qwen3.8-27b-colibri",
+        "load_wait_s": 22.23,
+        "log": "C:\\Users\\mevad\\Desktop\\HIVI\\benchmarks\\27b_comparison\\logs\\colibri_tps\\B_serve.log",
+        "pid": 36300,
+        "engine_load_s": 17.0,
+        "rss_gb": 20.75,
+        "cuda": true
+      },
+      "warmup": {
+        "ok": true,
+        "ttft_s": 3.894382400001632,
+        "wall_s": 29.125,
+        "completion_tokens": 64,
+        "prompt_tokens": 79,
+        "finish_reason": "length",
+        "error": null,
+        "decode_tps": 2.497,
+        "e2e_tps": 2.197,
+        "mode": "stream",
+        "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros"
+      },
+      "measured": [
+        {
+          "ok": true,
+          "ttft_s": 4.265492899983656,
+          "wall_s": 29.894,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.458,
+          "e2e_tps": 2.141,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 1,
+          "gpu_before": {
+            "util": 15.0,
+            "mem": 6290.0,
+            "temp": 44.0,
+            "power": 8.3
+          },
+          "gpu_after": {
+            "util": 26.0,
+            "mem": 6356.0,
+            "temp": 46.0,
+            "power": 12.24
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.241790400003083,
+          "wall_s": 29.336,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.51,
+          "e2e_tps": 2.182,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 2,
+          "gpu_before": {
+            "util": 15.0,
+            "mem": 6358.0,
+            "temp": 46.0,
+            "power": 8.54
+          },
+          "gpu_after": {
+            "util": 25.0,
+            "mem": 6338.0,
+            "temp": 47.0,
+            "power": 12.62
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.284257399995113,
+          "wall_s": 30.728,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.382,
+          "e2e_tps": 2.083,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 3,
+          "gpu_before": {
+            "util": 14.0,
+            "mem": 6356.0,
+            "temp": 46.0,
+            "power": 8.67
+          },
+          "gpu_after": {
+            "util": 21.0,
+            "mem": 6324.0,
+            "temp": 48.0,
+            "power": 11.96
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.243236800015438,
+          "wall_s": 30.547,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.395,
+          "e2e_tps": 2.095,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 4,
+          "gpu_before": {
+            "util": 13.0,
+            "mem": 6324.0,
+            "temp": 47.0,
+            "power": 8.76
+          },
+          "gpu_after": {
+            "util": 22.0,
+            "mem": 6324.0,
+            "temp": 48.0,
+            "power": 12.27
+          }
+        },
+        {
+          "ok": true,
+          "ttft_s": 4.184169599990128,
+          "wall_s": 30.116,
+          "completion_tokens": 64,
+          "prompt_tokens": 79,
+          "finish_reason": "length",
+          "error": null,
+          "decode_tps": 2.429,
+          "e2e_tps": 2.125,
+          "mode": "stream",
+          "preview": "We need to respond to user: \"Write a continuous technical explanation of how transformer attention works. Use plain pros",
+          "run": 5,
+          "gpu_before": {
+            "util": 14.0,
+            "mem": 6338.0,
+            "temp": 47.0,
+            "power": 8.52
+          },
+          "gpu_after": {
+            "util": 27.0,
+            "mem": 6323.0,
+            "temp": 48.0,
+            "power": 12.19
+          }
+        }
+      ],
+      "summary": {
+        "decode_tps": {
+          "median": 2.429,
+          "min": 2.382,
+          "max": 2.51,
+          "n": 5
+        },
+        "e2e_tps": {
+          "median": 2.125,
+          "min": 2.083,
+          "max": 2.182,
+          "n": 5
+        },
+        "ttft_s": {
+          "median": 4.243,
+          "min": 4.184,
+          "max": 4.284,
+          "n": 5
+        },
+        "wall_s": {
+          "median": 30.116,
+          "min": 29.336,
+          "max": 30.728,
+          "n": 5
+        },
+        "completion_tokens": {
+          "median": 64,
+          "min": 64,
+          "max": 64,
+          "n": 5
+        },
+        "n_ok": 5,
+        "n_fail": 0,
+        "peak_vram_mib": 6356.0
+      },
+      "pre_gpu": {
+        "util": 53.0,
+        "mem": 129.0,
+        "temp": 43.0,
+        "power": 8.32
+      },
+      "post_gpu": {
+        "util": 14.0,
+        "mem": 6323.0,
+        "temp": 48.0,
+        "power": 8.7
+      }
+    }
+  }
+}

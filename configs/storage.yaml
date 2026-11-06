@@ -1,0 +1,10 @@
+storage:
+  models_root: Models
+  usb_models_root: "D:/HIVI/Models"
+  data_root: data
+  indexes_dir: data/indexes
+  sessions_dir: data/sessions
+  metadata_dir: data/metadata
+  allowed_formats:
+    - .gguf
+    - .safetensors

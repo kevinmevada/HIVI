@@ -1,0 +1,38 @@
+﻿
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b0-unknown
+model      : C:\Users\mevad\Desktop\HIVI\Models\General\unsloth\qwen3.8-27b-q5_k_m\Qwen3.8-27B-UD-Q5_K_M.gguf
+ftype      : Q5_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> x
+
+[Start thinking]
+
+We
+
+[ Prompt: 8.3 t/s | Generation: 0.0 t/s ]
+
+> 
+
+Exiting...
+

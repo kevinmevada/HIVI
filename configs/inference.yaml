@@ -1,0 +1,20 @@
+inference:
+  default_backend: llama_cpp
+  backends:
+    # Vendored under src/hivi/inference/
+    llama_cpp:
+      enabled: true
+      path: llama.cpp-master
+    airllm:
+      enabled: false
+      path: airllm-main
+    colibri:
+      enabled: false
+      path: colibri-LLM-main
+    # External: installed on the PC, not vendored in this repo
+    ollama:
+      enabled: false
+      mode: external
+      base_url: http://127.0.0.1:11434
+  context_length: 8192
+  temperature: 0.7

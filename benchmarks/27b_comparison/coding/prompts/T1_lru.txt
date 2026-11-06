@@ -1,0 +1,1 @@
+Implement an LRU cache in Python using a hash map and a doubly linked list with O(1) get and O(1) put. Include type hints, edge cases, unit tests (pytest-style), and complexity analysis. Output only code and brief analysis.

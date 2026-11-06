@@ -1,0 +1,506 @@
+{
+  "scope": "colibri_only_27b",
+  "started_at": "2026-11-05T22:08:45.941552+00:00",
+  "settings": {
+    "ctx": 4096,
+    "ngen": 64,
+    "temp": 0.1,
+    "prompt": "Reply with exactly one word: pong"
+  },
+  "models": {
+    "A": {
+      "status": "COMPLETED",
+      "name": "Unsloth-Qwen3.8-27B-UD-Q5_K_M",
+      "quant": "Q5_K_M",
+      "path": "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\unsloth\\qwen3.8-27b-q5_k_m\\Qwen3.8-27B-UD-Q5_K_M.colibri",
+      "note": "Reused prior Colibri A measured logs; wall_s estimated from log mtimes for r1-r5",
+      "measured": [
+        {
+          "run": 1,
+          "ok": true,
+          "wall_s": 38.0,
+          "load_s": 15.5,
+          "rss_gb": 18.49,
+          "speed_tps": null,
+          "cuda": true,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null
+        },
+        {
+          "run": 2,
+          "ok": true,
+          "wall_s": 38.968,
+          "load_s": 15.1,
+          "rss_gb": 18.49,
+          "speed_tps": null,
+          "cuda": true,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null
+        },
+        {
+          "run": 3,
+          "ok": true,
+          "wall_s": 39.513,
+          "load_s": 15.5,
+          "rss_gb": 18.49,
+          "speed_tps": null,
+          "cuda": true,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null
+        },
+        {
+          "run": 4,
+          "ok": true,
+          "wall_s": 36.75,
+          "load_s": 15.0,
+          "rss_gb": 18.49,
+          "speed_tps": null,
+          "cuda": true,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null
+        },
+        {
+          "run": 5,
+          "ok": true,
+          "wall_s": 36.505,
+          "load_s": 14.8,
+          "rss_gb": 18.49,
+          "speed_tps": null,
+          "cuda": true,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null
+        }
+      ],
+      "summary": {
+        "wall_s": {
+          "median": 38.0,
+          "min": 36.505,
+          "max": 39.513,
+          "n": 5
+        },
+        "load_s": {
+          "median": 15.1,
+          "min": 14.8,
+          "max": 15.5,
+          "n": 5
+        },
+        "rss_gb": {
+          "median": 18.49,
+          "min": 18.49,
+          "max": 18.49,
+          "n": 5
+        },
+        "gen_tps": {
+          "median": null
+        },
+        "peak_vram_mib": {
+          "median": null
+        },
+        "peak_gpu_util": {
+          "median": null
+        },
+        "cuda_verified_runs": 5,
+        "n_ok": 5,
+        "n_fail": 0
+      }
+    },
+    "B": {
+      "status": "COMPLETED",
+      "name": "0bserverx-RVN-Heretic-Q6_K",
+      "quant": "Q6_K",
+      "path": "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\0bserverx\\qwen3.8-27b-heretic-abliterated-uncensored-q6_k\\RVN-Q6_K.colibri",
+      "warmup": {
+        "tag": "B_warm",
+        "ok": true,
+        "wall_s": 35.12,
+        "peak_gpu_util": 56.0,
+        "peak_vram_mib": 6293.0,
+        "pre_gpu": {
+          "util": 55.0,
+          "mem": 189.0,
+          "temp": 39.0,
+          "power": 8.3
+        },
+        "post_gpu": {
+          "util": 23.0,
+          "mem": 134.0,
+          "temp": 42.0,
+          "power": 11.87
+        },
+        "load_s": 18.5,
+        "rss_gb": 20.75,
+        "cuda": true,
+        "speed_tps": null,
+        "returncode": 0
+      },
+      "measured": [
+        {
+          "tag": "B_r1",
+          "ok": true,
+          "wall_s": 34.895,
+          "peak_gpu_util": 54.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 134.0,
+            "temp": 41.0,
+            "power": 8.36
+          },
+          "post_gpu": {
+            "util": 22.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.86
+          },
+          "load_s": 18.2,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 1
+        },
+        {
+          "tag": "B_r2",
+          "ok": true,
+          "wall_s": 33.279,
+          "peak_gpu_util": 54.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 8.46
+          },
+          "post_gpu": {
+            "util": 26.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 12.04
+          },
+          "load_s": 16.7,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 2
+        },
+        {
+          "tag": "B_r3",
+          "ok": true,
+          "wall_s": 33.072,
+          "peak_gpu_util": 54.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 8.44
+          },
+          "post_gpu": {
+            "util": 22.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.89
+          },
+          "load_s": 16.5,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 3
+        },
+        {
+          "tag": "B_r4",
+          "ok": true,
+          "wall_s": 35.124,
+          "peak_gpu_util": 63.0,
+          "peak_vram_mib": 6297.0,
+          "pre_gpu": {
+            "util": 54.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 8.47
+          },
+          "post_gpu": {
+            "util": 25.0,
+            "mem": 138.0,
+            "temp": 42.0,
+            "power": 11.93
+          },
+          "load_s": 16.7,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 4
+        },
+        {
+          "tag": "B_r5",
+          "ok": true,
+          "wall_s": 34.566,
+          "peak_gpu_util": 59.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 41.0,
+            "power": 8.45
+          },
+          "post_gpu": {
+            "util": 22.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.86
+          },
+          "load_s": 16.9,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 5
+        }
+      ],
+      "summary": {
+        "wall_s": {
+          "median": 34.566,
+          "min": 33.072,
+          "max": 35.124,
+          "n": 5
+        },
+        "load_s": {
+          "median": 16.7,
+          "min": 16.5,
+          "max": 18.2,
+          "n": 5
+        },
+        "rss_gb": {
+          "median": 20.75,
+          "min": 20.75,
+          "max": 20.75,
+          "n": 5
+        },
+        "gen_tps": {
+          "median": null,
+          "min": null,
+          "max": null,
+          "n": 0
+        },
+        "peak_vram_mib": {
+          "median": 6294.0,
+          "min": 6294.0,
+          "max": 6297.0,
+          "n": 5
+        },
+        "peak_gpu_util": {
+          "median": 54.0,
+          "min": 54.0,
+          "max": 63.0,
+          "n": 5
+        },
+        "cuda_verified_runs": 5,
+        "n_ok": 5,
+        "n_fail": 0
+      }
+    },
+    "C": {
+      "status": "COMPLETED",
+      "name": "Coletti-Uncensored-Q6_K",
+      "quant": "Q6_K",
+      "path": "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\jonathan-coletti\\qwen3.8-27b-uncensored-q6_k\\Qwen3.8-27B-Uncensored-Q6_K.colibri",
+      "warmup": {
+        "tag": "C_warm",
+        "ok": true,
+        "wall_s": 34.769,
+        "peak_gpu_util": 54.0,
+        "peak_vram_mib": 6294.0,
+        "pre_gpu": {
+          "util": 54.0,
+          "mem": 135.0,
+          "temp": 40.0,
+          "power": 8.22
+        },
+        "post_gpu": {
+          "util": 25.0,
+          "mem": 135.0,
+          "temp": 42.0,
+          "power": 12.12
+        },
+        "load_s": 17.8,
+        "rss_gb": 20.75,
+        "cuda": true,
+        "speed_tps": null,
+        "returncode": 0
+      },
+      "measured": [
+        {
+          "tag": "C_r1",
+          "ok": true,
+          "wall_s": 33.301,
+          "peak_gpu_util": 53.0,
+          "peak_vram_mib": 6297.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 41.0,
+            "power": 8.44
+          },
+          "post_gpu": {
+            "util": 24.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 12.19
+          },
+          "load_s": 16.7,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 1
+        },
+        {
+          "tag": "C_r2",
+          "ok": true,
+          "wall_s": 33.139,
+          "peak_gpu_util": 54.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 54.0,
+            "mem": 135.0,
+            "temp": 41.0,
+            "power": 8.49
+          },
+          "post_gpu": {
+            "util": 22.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.91
+          },
+          "load_s": 16.6,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 2
+        },
+        {
+          "tag": "C_r3",
+          "ok": true,
+          "wall_s": 34.499,
+          "peak_gpu_util": 59.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 8.51
+          },
+          "post_gpu": {
+            "util": 24.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.8
+          },
+          "load_s": 16.8,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 3
+        },
+        {
+          "tag": "C_r4",
+          "ok": true,
+          "wall_s": 33.154,
+          "peak_gpu_util": 53.0,
+          "peak_vram_mib": 6302.0,
+          "pre_gpu": {
+            "util": 55.0,
+            "mem": 135.0,
+            "temp": 41.0,
+            "power": 8.62
+          },
+          "post_gpu": {
+            "util": 25.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 12.12
+          },
+          "load_s": 16.6,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 4
+        },
+        {
+          "tag": "C_r5",
+          "ok": true,
+          "wall_s": 33.644,
+          "peak_gpu_util": 54.0,
+          "peak_vram_mib": 6294.0,
+          "pre_gpu": {
+            "util": 53.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 8.48
+          },
+          "post_gpu": {
+            "util": 27.0,
+            "mem": 135.0,
+            "temp": 42.0,
+            "power": 11.82
+          },
+          "load_s": 16.6,
+          "rss_gb": 20.75,
+          "cuda": true,
+          "speed_tps": null,
+          "returncode": 0,
+          "run": 5
+        }
+      ],
+      "summary": {
+        "wall_s": {
+          "median": 33.301,
+          "min": 33.139,
+          "max": 34.499,
+          "n": 5
+        },
+        "load_s": {
+          "median": 16.6,
+          "min": 16.6,
+          "max": 16.8,
+          "n": 5
+        },
+        "rss_gb": {
+          "median": 20.75,
+          "min": 20.75,
+          "max": 20.75,
+          "n": 5
+        },
+        "gen_tps": {
+          "median": null,
+          "min": null,
+          "max": null,
+          "n": 0
+        },
+        "peak_vram_mib": {
+          "median": 6294.0,
+          "min": 6294.0,
+          "max": 6302.0,
+          "n": 5
+        },
+        "peak_gpu_util": {
+          "median": 54.0,
+          "min": 53.0,
+          "max": 59.0,
+          "n": 5
+        },
+        "cuda_verified_runs": 5,
+        "n_ok": 5,
+        "n_fail": 0
+      }
+    }
+  },
+  "note": "Running models: ['B', 'C']",
+  "ended_at": "2026-11-05T22:17:01.619061+00:00"
+}

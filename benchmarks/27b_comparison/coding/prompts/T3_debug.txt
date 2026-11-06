@@ -1,0 +1,15 @@
+Find and fix all bugs in this Python function. Explain each bug. Keep a corrected version.
+
+```python
+def sliding_window_max(nums, k):
+    """Return max of each contiguous window of size k."""
+    if not nums or k <= 0:
+        return []
+    out = []
+    for i in range(len(nums) - k):
+        window = nums[i:i+k]
+        # mutate shared state incorrectly
+        nums[i] = window[0]
+        out.append(max(window))
+    return out
+```

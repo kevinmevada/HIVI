@@ -1,0 +1,30 @@
+{
+  "config_A_conservative": {
+    "ctx": 4096,
+    "n_predict_speed": 64,
+    "n_predict_coding": 512,
+    "temperature": 0.1,
+    "seed": 42,
+    "llama": {
+      "ngl": 99,
+      "cache_type_k": "q8_0",
+      "cache_type_v": "q8_0",
+      "flash_attn": "on",
+      "batch": 512,
+      "ubatch": 128
+    },
+    "colibri": {
+      "gpu": "auto",
+      "policy": "balanced",
+      "auto_tier": true
+    }
+  },
+  "config_B_standard": {
+    "ctx": 8192,
+    "note": "Run only if Config A completes and free RAM > 8 GB after unload"
+  },
+  "config_C_quality": {
+    "ctx": 16384,
+    "note": "Deferred unless Config B fits without OOM"
+  }
+}

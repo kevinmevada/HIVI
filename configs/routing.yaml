@@ -1,0 +1,4 @@
+routing:
+  strategy: capability
+  fallback_model: null
+  rules: []

@@ -1,0 +1,4 @@
+security:
+  allow_remote_models: false
+  verify_checksums: true
+  sandbox_tools: true

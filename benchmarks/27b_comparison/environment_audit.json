@@ -1,0 +1,75 @@
+{
+    "software":  {
+                     "python_system":  "3.11.9",
+                     "colibri":  {
+                                     "note":  "qwen36.exe + coli_cuda.dll present; qwen38.exe NOT built — Qwen3.8-27B maps to qwen35/qwen38 engine path",
+                                     "version":  "2.1.0",
+                                     "path":  "C:\\Users\\mevad\\Downloads\\colibri-main\\colibri-main",
+                                     "coli_cuda_dll":  true,
+                                     "qwen38_exe":  false,
+                                     "qwen36_exe":  true
+                                 },
+                     "llama_cpp":  {
+                                       "server_present":  true,
+                                       "path":  "C:\\Users\\mevad\\Desktop\\HIVI\\data\\P1_1\\runtime\\llama.cpp\\bin\\llama-cli.exe",
+                                       "ggml_cuda_dll":  true,
+                                       "version":  "0.8.0-dev (build 0, commit unknown)",
+                                       "built_with":  "MSVC 19.44.35229.0 Windows AMD64"
+                                   },
+                     "python_uv":  "3.13.9"
+                 },
+    "generated_at":  "2026-11-05T21:43:31.4206539Z",
+    "hardware":  {
+                     "physical_cores":  24,
+                     "vram_mib":  8151,
+                     "cuda_toolkit":  "13.4",
+                     "gpu_name":  "NVIDIA GeForce RTX 5060 Laptop GPU",
+                     "ram_total_gb":  31.46,
+                     "os":  "Windows 11",
+                     "driver":  "616.92",
+                     "logical_processors":  24,
+                     "cuda_arch":  "sm_120",
+                     "cpu_name":  "Intel(R) Core(TM) Ultra 9 275HX",
+                     "ram_free_gb_at_audit":  22.52
+                 },
+    "gpu_snapshot":  "6324 MiB, 1576 MiB, 9 %, 55, 8.70 W",
+    "blockers":  [
+                     "GPU currently occupied (~6.3 GiB used) by other processes (ollama/qwen36/llama) — must free before fair bench",
+                     "qwen38.exe missing for Colibri Qwen3.8-27B path; do not force qwen36 onto qwen35 models",
+                     "Models B and C have no .colibri import yet — Colibri needs coli import (permission required before creating sidecars)",
+                     "18-21 GB GGUFs on 8 GB VRAM =\u003e llama.cpp hybrid offload expected; Config C 16k may OOM"
+                 ],
+    "phase":  0,
+    "models":  [
+                   {
+                       "hidden":  5120,
+                       "id":  "A",
+                       "quant":  "UD-Q5_K_M",
+                       "vocab":  248320,
+                       "colibri_arch":  "qwen35",
+                       "colibri_import":  true,
+                       "layers":  64,
+                       "name":  "Qwen3.8-27B UD-Q5_K_M",
+                       "path":  "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\unsloth\\qwen3.8-27b-q5_k_m\\Qwen3.8-27B-UD-Q5_K_M.gguf",
+                       "max_pos":  262144,
+                       "size_gb":  18.41,
+                       "model_type":  "qwen3_5_text"
+                   },
+                   {
+                       "id":  "B",
+                       "name":  "RVN Heretic Q6_K",
+                       "quant":  "Q6_K",
+                       "path":  "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\0bserverx\\qwen3.8-27b-heretic-abliterated-uncensored-q6_k\\RVN-Q6_K.gguf",
+                       "size_gb":  20.57,
+                       "colibri_import":  false
+                   },
+                   {
+                       "id":  "C",
+                       "name":  "Jonathan Coletti Uncensored Q6_K",
+                       "quant":  "Q6_K",
+                       "path":  "C:\\Users\\mevad\\Desktop\\HIVI\\Models\\General\\jonathan-coletti\\qwen3.8-27b-uncensored-q6_k\\Qwen3.8-27B-Uncensored-Q6_K.gguf",
+                       "size_gb":  20.89,
+                       "colibri_import":  false
+                   }
+               ]
+}

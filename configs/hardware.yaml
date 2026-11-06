@@ -1,0 +1,5 @@
+hardware:
+  prefer_gpu: true
+  cpu_threads: null
+  max_vram_gb: null
+  device_policy: auto

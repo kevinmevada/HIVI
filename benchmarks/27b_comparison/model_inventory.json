@@ -1,0 +1,36 @@
+{
+    "models":  [
+                   {
+                       "cuda_trunk":  true,
+                       "arch":  "qwen35",
+                       "id":  "A",
+                       "colibri":  "...\\Qwen3.8-27B-UD-Q5_K_M.colibri",
+                       "smoke_colibri":  "PASS",
+                       "engine":  "qwen36",
+                       "gguf":  "...\\Qwen3.8-27B-UD-Q5_K_M.gguf",
+                       "rss_gb":  18.49,
+                       "load_s":  17.4,
+                       "wall_s":  38.21
+                   },
+                   {
+                       "id":  "B",
+                       "imported":  true,
+                       "arch":  "qwen35",
+                       "colibri":  "...\\RVN-Q6_K.colibri",
+                       "gguf":  "...\\RVN-Q6_K.gguf",
+                       "engine":  "qwen36"
+                   },
+                   {
+                       "id":  "C",
+                       "imported":  true,
+                       "arch":  "qwen35",
+                       "colibri":  "...\\Qwen3.8-27B-Uncensored-Q6_K.colibri",
+                       "gguf":  "...\\Qwen3.8-27B-Uncensored-Q6_K.gguf",
+                       "engine":  "qwen36"
+                   }
+               ],
+    "qwen38_note":  "Built for completeness; dense Qwen3.8-27B GGUF uses qwen36 per gguf.md",
+    "note":  "coli import --mode link --no-mtp; engine for qwen35 dense = qwen36 (docs/gguf.md)",
+    "updated":  "2026-11-05T21:48:05.8513641Z",
+    "qwen38_built":  true
+}

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HIVI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg0: #0c1110;
+      --bg1: #141b19;
+      --bg2: #1c2623;
+      --line: #2a3934;
+      --text: #e8efe9;
+      --muted: #8fa39a;
+      --accent: #c8f560;
+      --accent-dim: #7ea32e;
+      --user: #1e2a26;
+      --bot: #121816;
+      --danger: #ff7a6b;
+      --coli: #6ec8ff;
+      --llama: #ffb86b;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "IBM Plex Sans", system-ui, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1a2e22 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #243028 0%, transparent 50%),
+        linear-gradient(180deg, var(--bg0), #080b0a 100%);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100%;
+    }
+    header {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 1rem;
+      align-items: center;
+      padding: 0.9rem 1.25rem;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12, 17, 16, 0.78);
+      backdrop-filter: blur(10px);
+    }
+    .brand {
+      font-family: "Archivo Black", sans-serif;
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+    .picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem;
+      align-items: center;
+      min-width: 0;
+    }
+    .picker select {
+      flex: 1 1 280px;
+      min-width: 0;
+      max-width: 520px;
+      background: var(--bg2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 0.3rem;
+      padding: 0.45rem 0.55rem;
+      font: inherit;
+    }
+    .picker button {
+      border: 0;
+      border-radius: 0.3rem;
+      background: var(--accent);
+      color: #0c1110;
+      font-weight: 600;
+      padding: 0.45rem 0.9rem;
+      cursor: pointer;
+    }
+    .picker button.secondary {
+      background: #2a3934;
+      color: var(--text);
+    }
+    .picker button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .meta { text-align: right; font-size: 0.82rem; color: var(--muted); }
+    .meta strong { color: var(--text); }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .badge.colibri { background: rgba(110,200,255,0.15); color: var(--coli); }
+    .badge.llama { background: rgba(255,184,107,0.15); color: var(--llama); }
+    .badge.idle { background: rgba(143,163,154,0.15); color: var(--muted); }
+    #chat {
+      overflow-y: auto;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+    .bubble {
+      max-width: min(780px, 92%);
+      padding: 0.9rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 0.35rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.45;
+      font-size: 0.98rem;
+    }
+    .bubble.user { align-self: flex-end; background: var(--user); border-color: #33443d; }
+    .bubble.assistant {
+      align-self: flex-start;
+      background: var(--bot);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.92rem;
+    }
+    .bubble.system {
+      align-self: center;
+      color: var(--muted);
+      background: transparent;
+      border-style: dashed;
+      font-size: 0.85rem;
+    }
+    .composer {
+      padding: 1rem 1.25rem 1.25rem;
+      border-top: 1px solid var(--line);
+      background: rgba(12, 17, 16, 0.92);
+      display: grid;
+      gap: 0.65rem;
+    }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 0.65rem; }
+    textarea {
+      width: 100%;
+      min-height: 3.4rem;
+      max-height: 10rem;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 0.35rem;
+      background: var(--bg2);
+      color: var(--text);
+      padding: 0.75rem 0.85rem;
+      font: inherit;
+      outline: none;
+    }
+    textarea:focus { border-color: var(--accent-dim); }
+    button.send {
+      border: 0;
+      border-radius: 0.35rem;
+      background: var(--accent);
+      color: #0c1110;
+      font-weight: 600;
+      padding: 0 1.2rem;
+      cursor: pointer;
+      min-width: 6.5rem;
+    }
+    button.send:disabled { opacity: 0.45; cursor: not-allowed; }
+    .opts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1rem;
+      align-items: center;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .opts label { display: flex; gap: 0.4rem; align-items: center; }
+    .opts input {
+      background: var(--bg2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 0.25rem;
+      padding: 0.25rem 0.4rem;
+      font: inherit;
+    }
+    .err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">HIVI</div>
+    <div class="picker">
+      <select id="modelSelect" aria-label="Model"></select>
+      <button id="loadBtn" type="button">Load</button>
+      <button id="stopBtn" class="secondary" type="button">Stop</button>
+      <button id="clearBtn" class="secondary" type="button">Clear</button>
+    </div>
+    <div class="meta">
+      <div><span id="engineBadge" class="badge idle">idle</span></div>
+      <div id="statusLine">select a model</div>
+    </div>
+  </header>
+
+  <main id="chat"></main>
+
+  <form class="composer" id="form">
+    <div class="opts">
+      <label>max tokens
+        <input id="maxTokens" type="number" min="16" max="8192" value="256" style="width:5rem" />
+      </label>
+      <label>temp
+        <input id="temp" type="number" min="0" max="2" step="0.1" value="0.2" style="width:4rem" />
+      </label>
+    </div>
+    <div class="row">
+      <textarea id="input" placeholder="Message HIVI…" autofocus></textarea>
+      <button class="send" id="send" type="submit">Send</button>
+    </div>
+  </form>
+
+  <script>
+    const chat = document.getElementById("chat");
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const sendBtn = document.getElementById("send");
+    const modelSelect = document.getElementById("modelSelect");
+    const loadBtn = document.getElementById("loadBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const statusLine = document.getElementById("statusLine");
+    const engineBadge = document.getElementById("engineBadge");
+
+    let messages = [];
+    let models = [];
+    let activeModelId = null;
+    let openaiModelId = "local";
+    let busy = false;
+
+    const SYSTEM = "You are HIVI, a careful local assistant. Rules: (1) Prefer accurate, grounded answers. (2) If you do not know, say you do not know — do not invent facts, citations, file paths, APIs, or personal details. (3) If the question is ambiguous, ask a short clarifying question. (4) Answer directly with no chain-of-thought and no repetition. (5) For code, only claim behavior you are confident about.";
+    const OPEN = "<" + "think" + ">";
+    const CLOSE = "<" + "/" + "think" + ">";
+
+    function addBubble(role, text, extraClass) {
+      const el = document.createElement("div");
+      el.className = "bubble " + (extraClass || role);
+      el.textContent = text;
+      chat.appendChild(el);
+      chat.scrollTop = chat.scrollHeight;
+      return el;
+    }
+
+    function stripThink(text) {
+      if (!text) return "";
+      let t = text;
+      t = t.replace(new RegExp(OPEN + "[\\s\\S]*?" + CLOSE, "gi"), "");
+      t = t.replace(new RegExp(OPEN + "[\\s\\S]*$", "i"), "");
+      return t.trim();
+    }
+
+    function stopRepetition(text) {
+      if (!text) return text;
+      const m = text.match(/(.{40,}?)(\s*\1){2,}/s);
+      if (m && m.index != null) return text.slice(0, m.index + m[1].length).trim();
+      const lines = text.split(/\n/);
+      if (lines.length >= 6) {
+        const last = lines[lines.length - 1];
+        let n = 0;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i] === last && last.trim()) n++;
+          else break;
+        }
+        if (n >= 4) return lines.slice(0, lines.length - n + 1).join("\n").trim();
+      }
+      return text;
+    }
+
+    function setBusy(v) {
+      busy = v;
+      loadBtn.disabled = v;
+      stopBtn.disabled = v;
+      sendBtn.disabled = v;
+      modelSelect.disabled = v;
+    }
+
+    function renderBadge(engine, status) {
+      engineBadge.className = "badge " + (engine === "colibri" ? "colibri" : engine === "llama" ? "llama" : "idle");
+      if (status === "ready" && engine) engineBadge.textContent = engine;
+      else engineBadge.textContent = status || "idle";
+    }
+
+    function optionLabel(m) {
+      const eng = m.engine === "colibri" ? "Colibrì" : "llama.cpp";
+      return `${m.name} · ${m.params} · ${m.quant} · ${m.size_gb} GB · ${eng}`;
+    }
+
+    async function loadModels() {
+      const r = await fetch("/api/models");
+      const data = await r.json();
+      models = (data.models || []).slice().sort((a, b) => (a.size_gb - b.size_gb) || a.name.localeCompare(b.name));
+      modelSelect.innerHTML = "";
+      if (!models.length) {
+        const o = document.createElement("option");
+        o.textContent = "No GGUF models found";
+        modelSelect.appendChild(o);
+        return;
+      }
+      for (const m of models) {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = optionLabel(m);
+        modelSelect.appendChild(o);
+      }
+    }
+
+    async function refreshOpenAIModel() {
+      try {
+        const r = await fetch("/v1/models");
+        if (!r.ok) return;
+        const data = await r.json();
+        const id = data?.data?.[0]?.id;
+        if (id) openaiModelId = id;
+      } catch (_) {}
+    }
+
+    async function refreshStatus() {
+      try {
+        const r = await fetch("/api/status");
+        const s = await r.json();
+        activeModelId = s.model_id;
+        renderBadge(s.engine, s.status);
+        statusLine.textContent = s.detail || s.status;
+        statusLine.classList.toggle("err", s.status === "error");
+        if (s.model_id) {
+          for (const opt of modelSelect.options) {
+            if (opt.value === s.model_id) opt.selected = true;
+          }
+        }
+        if (s.status === "ready" || s.healthy) await refreshOpenAIModel();
+      } catch (e) {
+        statusLine.textContent = "control server offline";
+        statusLine.classList.add("err");
+      }
+    }
+
+    async function loadSelected() {
+      const id = modelSelect.value;
+      const m = models.find((x) => x.id === id);
+      if (!m) return;
+      setBusy(true);
+      statusLine.textContent = `starting ${m.engine} for ${m.name}…`;
+      statusLine.classList.remove("err");
+      addBubble("system", `Loading ${m.name} via ${m.engine === "colibri" ? "Colibrì" : "llama.cpp"}…`);
+      try {
+        const r = await fetch("/api/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id }),
+        });
+        const s = await r.json();
+        await refreshStatus();
+        if (!r.ok || s.status !== "ready") {
+          addBubble("system", "Failed: " + (s.detail || r.status), "err");
+        } else {
+          messages = [];
+          await refreshOpenAIModel();
+          addBubble("system", `Ready · ${s.name} · ${s.engine} · id ${openaiModelId}`);
+        }
+      } catch (e) {
+        addBubble("system", "Error: " + e.message, "err");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function stopModel() {
+      setBusy(true);
+      try {
+        await fetch("/api/stop", { method: "POST" });
+        await refreshStatus();
+        addBubble("system", "Engine stopped");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function sendMessage(text) {
+      if (!activeModelId) {
+        addBubble("system", "Load a model first");
+        return;
+      }
+      messages.push({ role: "user", content: text });
+      addBubble("user", text);
+      const assistantEl = addBubble("assistant", "…");
+      setBusy(true);
+      const payload = {
+        model: openaiModelId,
+        messages: [{ role: "system", content: SYSTEM }, ...messages],
+        temperature: Number(document.getElementById("temp").value),
+        max_tokens: Number(document.getElementById("maxTokens").value),
+        stream: true,
+      };
+      // llama.cpp accepts these; Colibrì returns 400 unsupported_parameter
+      if ((engineBadge.textContent || "").toLowerCase().includes("llama")) {
+        payload.repeat_penalty = 1.18;
+        payload.frequency_penalty = 0.35;
+        payload.presence_penalty = 0.15;
+      }
+      let full = "";
+      try {
+        const r = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const parts = buf.split("\n");
+          buf = parts.pop();
+          for (const line of parts) {
+            const s = line.trim();
+            if (!s.startsWith("data:")) continue;
+            const data = s.slice(5).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const obj = JSON.parse(data);
+              const piece = obj?.choices?.[0]?.delta?.content || "";
+              if (!piece) continue;
+              full += piece;
+              assistantEl.textContent = stopRepetition(stripThink(full)) || "…";
+              chat.scrollTop = chat.scrollHeight;
+            } catch (_) {}
+          }
+        }
+        const visible = stopRepetition(stripThink(full)) || "(empty reply)";
+        assistantEl.textContent = visible;
+        messages.push({ role: "assistant", content: visible });
+      } catch (e) {
+        assistantEl.textContent = "Error: " + e.message;
+        assistantEl.classList.add("err");
+        messages.pop();
+      } finally {
+        setBusy(false);
+        input.focus();
+      }
+    }
+
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text || busy) return;
+      input.value = "";
+      sendMessage(text);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+    loadBtn.addEventListener("click", loadSelected);
+    stopBtn.addEventListener("click", stopModel);
+    clearBtn.addEventListener("click", () => {
+      messages = [];
+      chat.innerHTML = "";
+      addBubble("system", "New chat · HIVI");
+    });
+
+    addBubble("system", "HIVI · pick a downloaded model. Colibrì is used when supported; otherwise llama.cpp.");
+    loadModels().then(refreshStatus);
+    setInterval(refreshStatus, 8000);
+  </script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+{
+  "phase": "3_speed_config_A",
+  "prompt": "Reply with exactly one word: pong",
+  "combos": {
+    "A_colibri": {
+      "status": "COMPLETED",
+      "runtime": "colibri",
+      "model": {
+        "id": "A",
+        "name": "Qwen3.8-27B-UD-Q5_K_M",
+        "quant": "Q5_K_M",
+        "gguf": "C:/Users/mevad/Desktop/HIVI/Models/General/unsloth/qwen3.8-27b-q5_k_m/Qwen3.8-27B-UD-Q5_K_M.gguf",
+        "colibri": "C:/Users/mevad/Desktop/HIVI/Models/General/unsloth/qwen3.8-27b-q5_k_m/Qwen3.8-27B-UD-Q5_K_M.colibri"
+      },
+      "note": "Recovered from logs after JSON Path serialization crash; wall_s not captured in first pass",
+      "measured": [
+        {
+          "runtime": "colibri",
+          "run": 1,
+          "ok": true,
+          "wall_s": null,
+          "load_s": 15.5,
+          "rss_gb": 18.49,
+          "gen_tps": null,
+          "prompt_tps": null,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null,
+          "cuda_verified": true
+        },
+        {
+          "runtime": "colibri",
+          "run": 2,
+          "ok": true,
+          "wall_s": null,
+          "load_s": 15.1,
+          "rss_gb": 18.49,
+          "gen_tps": null,
+          "prompt_tps": null,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null,
+          "cuda_verified": true
+        },
+        {
+          "runtime": "colibri",
+          "run": 3,
+          "ok": true,
+          "wall_s": null,
+          "load_s": 15.5,
+          "rss_gb": 18.49,
+          "gen_tps": null,
+          "prompt_tps": null,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null,
+          "cuda_verified": true
+        },
+        {
+          "runtime": "colibri",
+          "run": 4,
+          "ok": true,
+          "wall_s": null,
+          "load_s": 15.0,
+          "rss_gb": 18.49,
+          "gen_tps": null,
+          "prompt_tps": null,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null,
+          "cuda_verified": true
+        },
+        {
+          "runtime": "colibri",
+          "run": 5,
+          "ok": true,
+          "wall_s": null,
+          "load_s": 14.8,
+          "rss_gb": 18.49,
+          "gen_tps": null,
+          "prompt_tps": null,
+          "peak_gpu_util": null,
+          "peak_vram_mib": null,
+          "cuda_verified": true
+        }
+      ],
+      "summary": {
+        "n_ok": 5,
+        "n_fail": 0,
+        "wall_s": {
+          "median": null,
+          "min": null,
+          "max": null
+        },
+        "gen_tps": {
+          "median": null
+        },
+        "prompt_tps": {
+          "median": null
+        },
+        "load_s_median": 15.1
+      }
+    }
+  }
+}

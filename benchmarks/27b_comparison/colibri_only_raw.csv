@@ -1,0 +1,11 @@
+model_id,model,quant,run,ok,wall_s,load_s,rss_gb,gen_tps,peak_gpu_util,peak_vram_mib,cuda
+B,0bserverx-RVN-Heretic-Q6_K,Q6_K,1,True,34.895,18.2,20.75,,54.0,6294.0,True
+B,0bserverx-RVN-Heretic-Q6_K,Q6_K,2,True,33.279,16.7,20.75,,54.0,6294.0,True
+B,0bserverx-RVN-Heretic-Q6_K,Q6_K,3,True,33.072,16.5,20.75,,54.0,6294.0,True
+B,0bserverx-RVN-Heretic-Q6_K,Q6_K,4,True,35.124,16.7,20.75,,63.0,6297.0,True
+B,0bserverx-RVN-Heretic-Q6_K,Q6_K,5,True,34.566,16.9,20.75,,59.0,6294.0,True
+C,Coletti-Uncensored-Q6_K,Q6_K,1,True,33.301,16.7,20.75,,53.0,6297.0,True
+C,Coletti-Uncensored-Q6_K,Q6_K,2,True,33.139,16.6,20.75,,54.0,6294.0,True
+C,Coletti-Uncensored-Q6_K,Q6_K,3,True,34.499,16.8,20.75,,59.0,6294.0,True
+C,Coletti-Uncensored-Q6_K,Q6_K,4,True,33.154,16.6,20.75,,53.0,6302.0,True
+C,Coletti-Uncensored-Q6_K,Q6_K,5,True,33.644,16.6,20.75,,54.0,6294.0,True
