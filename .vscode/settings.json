@@ -1,8 +1,12 @@
 {
-  "python.analysis.extraPaths": ["src"],
+  "python.analysis.extraPaths": [
+    "src"
+  ],
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["tests"],
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
   "editor.formatOnSave": true,
   "files.exclude": {
     "**/__pycache__": true,
@@ -25,5 +29,6 @@
       "source": "PowerShell",
       "icon": "terminal-powershell"
     }
-  }
+  },
+  "python-envs.defaultEnvManager": "ms-python.python:system"
 }

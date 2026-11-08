@@ -30,6 +30,10 @@ def _quant(name: str) -> str:
 def _params(name: str, rel: str) -> str:
     if re.search(r"(?i)deepseek-coder-v2-lite", name):
         return "16B MoE (~2.4B active)"
+    if re.search(r"(?i)qwen3-coder-30b-a3b|30b-a3b", name) or re.search(
+        r"(?i)qwen3-coder-30b-a3b|30b-a3b", rel
+    ):
+        return "30B MoE (~3B active)"
     if re.search(r"(?i)gpt-oss-(\d+)", name):
         return f"{re.search(r'(?i)gpt-oss-(\d+)', name).group(1)}B"
     m = re.search(r"(?i)(\d+(?:\.\d+)?)[Bb](?:-|_|\.|$)", name)
@@ -50,6 +54,8 @@ def _pick_engine(name: str, rel: str) -> tuple[str, str]:
         return "llama", "architecture qwen2 not supported by Colibrì"
     if "deepseek-coder-v2" in n or "deepseek-coder-v2" in r:
         return "llama", "DeepSeek-Coder-V2 MoE → llama.cpp"
+    if "qwen3-coder" in n or "qwen3-coder" in r or "30b-a3b" in n or "30b-a3b" in r:
+        return "llama", "Qwen3-Coder MoE → llama.cpp (--cpu-moe)"
     # Colibrì-friendly (qwen3 / qwen35 / ornith)
     if any(k in n or k in r for k in ("qwen3.8", "qwen3.5", "ornith", "qwen3-")):
         return "colibri", "qwen3/qwen35 family supported by Colibrì"

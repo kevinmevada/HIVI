@@ -1,6 +1,7 @@
 """Start/stop Colibrì or llama-server for the selected HIVI model."""
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 import urllib.error
@@ -9,6 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from registry import ModelEntry
+
+
+def _cpu_threads() -> int:
+    n = os.cpu_count() or 8
+    # Leave a couple cores for UI / OS; MoE expert eval is CPU-heavy.
+    return max(4, min(16, n - 2))
 
 ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
 COLI = Path(r"C:\Users\mevad\Downloads\colibri-main\colibri-main\c\coli")
@@ -119,6 +126,7 @@ def ensure_colibri(model: ModelEntry) -> Path:
 def start_llama(model: ModelEntry) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log = LOG_DIR / f"hivi_llama_{model.id}.log"
+    threads = str(_cpu_threads())
     args = [
         str(LLAMA),
         "-m",
@@ -131,8 +139,18 @@ def start_llama(model: ModelEntry) -> None:
         "8192",
         "-np",
         "1",
+        "-t",
+        threads,
+        "-tb",
+        threads,
+        "-b",
+        "512",
+        "-ub",
+        "256",
         "--fit",
         "on",
+        "--fit-target",
+        "512",
         "-ctk",
         "q8_0",
         "-ctv",
@@ -140,16 +158,44 @@ def start_llama(model: ModelEntry) -> None:
         "--jinja",
         "-fa",
         "on",
-        "--reasoning",
-        "off",
         "--repeat-penalty",
-        "1.15",
+        "1.1",
         "--frequency-penalty",
-        "0.3",
+        "0.2",
     ]
-    # MoE-friendly for DeepSeek
-    if "deepseek-coder-v2" in model.path.lower():
-        args += ["--cpu-moe", "--moe-cache-mib", "1024", "-c", "4096"]
+    path_l = model.path.lower()
+    id_l = model.id.lower()
+    is_gpt_oss = "gpt-oss" in path_l or "gpt-oss" in id_l
+    # gpt-oss: peg-native chat parsing often drops the final answer when a
+    # commentary/constrain channel is malformed. Keep raw text in content and
+    # let the UI extract the final channel.
+    if is_gpt_oss:
+        args += [
+            "--reasoning",
+            "on",
+            "--reasoning-format",
+            "none",
+            "--reasoning-effort",
+            "low",
+            "--reasoning-budget",
+            "64",
+        ]
+    else:
+        args += ["--reasoning", "off"]
+    # MoE-friendly: keep experts in system RAM on 8GB VRAM; trim ctx for speed
+    if "deepseek-coder-v2" in path_l:
+        args += ["--cpu-moe", "--moe-cache-mib", "1536"]
+        # override earlier -c
+        for i, a in enumerate(args):
+            if a == "-c" and i + 1 < len(args):
+                args[i + 1] = "4096"
+                break
+    if "qwen3-coder-30b" in path_l or "30b-a3b" in path_l or "30b-a3b" in id_l:
+        args += ["--cpu-moe", "--moe-cache-mib", "3072"]
+        for i, a in enumerate(args):
+            if a == "-c" and i + 1 < len(args):
+                args[i + 1] = "4096"  # faster KV; raise in UI if needed later
+                break
     logf = log.open("w", encoding="utf-8")
     errf = (LOG_DIR / f"hivi_llama_{model.id}.log.err").open("w", encoding="utf-8")
     proc = subprocess.Popen(args, stdout=logf, stderr=errf, cwd=str(LLAMA.parent))
@@ -177,11 +223,13 @@ def start_colibri(model: ModelEntry) -> None:
         "--gpu",
         "auto",
         "--ctx",
-        "8192",
+        "4096",
         "--policy",
-        "balanced",
+        "experimental-fast",
         "--auto-tier",
         "--no-think",
+        "--effort",
+        "low",
     ]
     logf = log.open("w", encoding="utf-8")
     proc = subprocess.Popen(

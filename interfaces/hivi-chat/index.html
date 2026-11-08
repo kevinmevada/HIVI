@@ -122,6 +122,16 @@
       font-family: "IBM Plex Mono", ui-monospace, monospace;
       font-size: 0.92rem;
     }
+    .bubble.assistant.typing::after {
+      content: "▍";
+      display: inline-block;
+      margin-left: 1px;
+      color: var(--accent);
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
     .bubble.system {
       align-self: center;
       color: var(--muted);
@@ -129,6 +139,17 @@
       border-style: dashed;
       font-size: 0.85rem;
     }
+    .msg-meta {
+      align-self: flex-start;
+      margin-top: -0.4rem;
+      padding: 0 0.15rem;
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .msg-meta .fast { color: var(--accent); }
+    .msg-meta .slow { color: var(--danger); }
     .composer {
       padding: 1rem 1.25rem 1.25rem;
       border-top: 1px solid var(--line);
@@ -201,12 +222,7 @@
 
   <form class="composer" id="form">
     <div class="opts">
-      <label>max tokens
-        <input id="maxTokens" type="number" min="16" max="8192" value="256" style="width:5rem" />
-      </label>
-      <label>temp
-        <input id="temp" type="number" min="0" max="2" step="0.1" value="0.2" style="width:4rem" />
-      </label>
+      <span id="adaptiveHint">HAIE · fast / heuristic / semantic · params-only</span>
     </div>
     <div class="row">
       <textarea id="input" placeholder="Message HIVI…" autofocus></textarea>
@@ -245,12 +261,74 @@
       return el;
     }
 
+    function estimateTokens(text) {
+      if (!text) return 0;
+      // Rough local estimate when the server omits usage
+      return Math.max(1, Math.round(text.length / 4));
+    }
+
+    function formatSpeed(tokens, genMs, ttftMs, serverTps) {
+      const secs = Math.max(genMs, 1) / 1000;
+      const tps = serverTps != null && serverTps > 0 ? serverTps : (tokens > 0 ? tokens / secs : 0);
+      const tpsStr = tps >= 10 ? tps.toFixed(1) : tps.toFixed(2);
+      const genStr = genMs >= 1000 ? (genMs / 1000).toFixed(1) + "s" : Math.round(genMs) + "ms";
+      const ttftStr = ttftMs >= 1000 ? (ttftMs / 1000).toFixed(1) + "s" : Math.round(ttftMs) + "ms";
+      return { tps, label: `${tpsStr} tok/s · ${tokens} tok · ${genStr} gen · ${ttftStr} first` };
+    }
+
+    function addSpeedMeta(tokens, genMs, ttftMs, serverTps) {
+      const { tps, label } = formatSpeed(tokens, genMs, ttftMs, serverTps);
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      const speed = document.createElement("span");
+      speed.className = tps >= 20 ? "fast" : tps > 0 && tps < 5 ? "slow" : "";
+      speed.textContent = label;
+      meta.appendChild(speed);
+      chat.appendChild(meta);
+      chat.scrollTop = chat.scrollHeight;
+      return meta;
+    }
+
+    function deltaText(delta) {
+      if (!delta || typeof delta !== "object") return { content: "", reasoning: "" };
+      const content = delta.content == null ? "" : String(delta.content);
+      const reasoning = delta.reasoning_content != null
+        ? String(delta.reasoning_content)
+        : (delta.reasoning != null ? String(delta.reasoning) : "");
+      return { content, reasoning };
+    }
+
     function stripThink(text) {
       if (!text) return "";
       let t = text;
       t = t.replace(new RegExp(OPEN + "[\\s\\S]*?" + CLOSE, "gi"), "");
       t = t.replace(new RegExp(OPEN + "[\\s\\S]*$", "i"), "");
       return t.trim();
+    }
+
+    function extractAnswer(text) {
+      if (!text) return "";
+      // gpt-oss Harmony: ONLY final channel is user-facing
+      const final = text.match(/<\|channel\|>final<\|message\|>([\s\S]*?)(?=(?:<\|end\|>|<\|start\|>|$))/i);
+      if (final) return stripThink(final[1]).trim();
+      let t = text;
+      // Drop analysis/commentary entirely — never show internal reasoning
+      t = t.replace(/<\|channel\|>analysis<\|message\|>([\s\S]*?)(?=(?:<\|end\|>|<\|start\|>|<\|channel\|>|$))/gi, "");
+      t = t.replace(/<\|channel\|>commentary\b[^|]*<\|message\|>([\s\S]*?)(?=(?:<\|end\|>|<\|start\|>|<\|channel\|>|$))/gi, "");
+      if (/<\|channel\|>/i.test(t) && !/<\|channel\|>final/i.test(text)) {
+        // Still only analysis-shaped control text → treat as empty
+        return "";
+      }
+      t = t.replace(/<\|[^|>]+\|>/g, "");
+      return stripThink(t).trim();
+    }
+
+    function visibleText(rawContent, rawReasoning) {
+      const fromContent = extractAnswer(rawContent);
+      if (fromContent) return stopRepetition(fromContent);
+      // Never surface reasoning_content / analysis as the answer
+      void rawReasoning;
+      return "";
     }
 
     function stopRepetition(text) {
@@ -386,29 +464,81 @@
       }
       messages.push({ role: "user", content: text });
       addBubble("user", text);
-      const assistantEl = addBubble("assistant", "…");
+      const assistantEl = addBubble("assistant", "");
+      assistantEl.classList.add("typing");
       setBusy(true);
+      // Temp / max_tokens omitted on purpose — Adaptive-LLM-Sampling presets
+      // (classify by task) are injected by the HIVI server.
       const payload = {
         model: openaiModelId,
         messages: [{ role: "system", content: SYSTEM }, ...messages],
-        temperature: Number(document.getElementById("temp").value),
-        max_tokens: Number(document.getElementById("maxTokens").value),
         stream: true,
       };
-      // llama.cpp accepts these; Colibrì returns 400 unsupported_parameter
       if ((engineBadge.textContent || "").toLowerCase().includes("llama")) {
-        payload.repeat_penalty = 1.18;
-        payload.frequency_penalty = 0.35;
-        payload.presence_penalty = 0.15;
+        payload.stream_options = { include_usage: true };
+        payload.reasoning_effort = "low";
       }
+      const adaptiveHint = document.getElementById("adaptiveHint");
+      if (adaptiveHint) adaptiveHint.textContent = "HAIE · planning…";
+
+      // Typewriter: network may dump big chunks; reveal at a readable pace.
+      let target = "";
+      let shown = "";
+      let streamDone = false;
+      let paintTimer = null;
+      const CHARS_PER_TICK = 3;   // ~smooth "writing"
+      const TICK_MS = 18;
+
+      const paint = () => {
+        if (shown.length < target.length) {
+          const next = Math.min(shown.length + CHARS_PER_TICK, target.length);
+          // Prefer advancing to next newline when close — feels line-by-line
+          const slice = target.slice(shown.length, next + 40);
+          const nl = slice.indexOf("\n");
+          if (nl >= 0 && nl <= 24) {
+            shown = target.slice(0, shown.length + nl + 1);
+          } else {
+            shown = target.slice(0, next);
+          }
+          assistantEl.textContent = shown || "…";
+          chat.scrollTop = chat.scrollHeight;
+        }
+        if (!streamDone || shown.length < target.length) {
+          paintTimer = setTimeout(paint, TICK_MS);
+        } else {
+          paintTimer = null;
+          assistantEl.classList.remove("typing");
+        }
+      };
+      paintTimer = setTimeout(paint, TICK_MS);
+
+      const setTarget = (text) => {
+        target = text;
+        if (!paintTimer) paintTimer = setTimeout(paint, TICK_MS);
+      };
+
       let full = "";
+      let reasoningFull = "";
+      let usageTokens = null;
+      let serverTps = null;
+      const tRequest = performance.now();
+      let tFirst = null;
+      let tLast = null;
       try {
         const r = await fetch("/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
           body: JSON.stringify(payload),
         });
         if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
+        const path = r.headers.get("X-HIVI-HAIE-Path") || "?";
+        const intents = r.headers.get("X-HIVI-HAIE-Intents") || r.headers.get("X-HIVI-Adaptive-Bucket") || "?";
+        const cx = r.headers.get("X-HIVI-HAIE-Complexity") || "?";
+        const aTemp = r.headers.get("X-HIVI-HAIE-Temp") || r.headers.get("X-HIVI-Adaptive-Temp") || "?";
+        const aMax = r.headers.get("X-HIVI-HAIE-Max-Tokens") || r.headers.get("X-HIVI-Adaptive-Max-Tokens") || "?";
+        if (adaptiveHint) {
+          adaptiveHint.textContent = `HAIE · ${path} · ${intents} · c${cx} · temp ${aTemp} · max ${aMax}`;
+        }
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
@@ -416,27 +546,81 @@
           const { value, done } = await reader.read();
           if (done) break;
           buf += decoder.decode(value, { stream: true });
-          const parts = buf.split("\n");
+          const parts = buf.split(/\r?\n/);
           buf = parts.pop();
           for (const line of parts) {
             const s = line.trim();
             if (!s.startsWith("data:")) continue;
             const data = s.slice(5).trim();
-            if (data === "[DONE]") continue;
+            if (!data || data === "[DONE]") continue;
             try {
               const obj = JSON.parse(data);
-              const piece = obj?.choices?.[0]?.delta?.content || "";
-              if (!piece) continue;
-              full += piece;
-              assistantEl.textContent = stopRepetition(stripThink(full)) || "…";
-              chat.scrollTop = chat.scrollHeight;
+              if (obj?.usage?.completion_tokens != null) {
+                usageTokens = obj.usage.completion_tokens;
+              }
+              const tps = obj?.timings?.predicted_per_second;
+              if (typeof tps === "number" && tps > 0) serverTps = tps;
+              const delta = obj?.choices?.[0]?.delta || {};
+              const { content: piece, reasoning } = deltaText(delta);
+              if (!piece && !reasoning) continue;
+              const now = performance.now();
+              if (tFirst == null) tFirst = now;
+              tLast = now;
+              if (reasoning) reasoningFull += reasoning;
+              if (piece) full += piece;
+              const visibleSoFar = visibleText(full, "");
+              if (visibleSoFar) {
+                setTarget(visibleSoFar);
+              } else if (!full) {
+                assistantEl.textContent = "thinking…";
+              }
+              const est = usageTokens != null
+                ? usageTokens
+                : estimateTokens(full || reasoningFull);
+              const genMs = Math.max(now - tFirst, 1);
+              statusLine.textContent = formatSpeed(est, genMs, tFirst - tRequest, serverTps).label;
             } catch (_) {}
           }
         }
-        const visible = stopRepetition(stripThink(full)) || "(empty reply)";
+        streamDone = true;
+        let visible = visibleText(full, reasoningFull);
+        if (!visible) {
+          const used = usageTokens != null ? usageTokens : estimateTokens(reasoningFull);
+          visible = reasoningFull
+            ? `(no final answer — model used ~${used} tokens on hidden reasoning. Clear chat and retry.)`
+            : "(empty reply)";
+          assistantEl.classList.add("err");
+        }
+        setTarget(visible);
+        // Wait until typewriter catches up before unlocking send
+        await new Promise((resolve) => {
+          const wait = () => {
+            if (shown.length >= target.length) resolve();
+            else setTimeout(wait, 40);
+          };
+          wait();
+        });
         assistantEl.textContent = visible;
-        messages.push({ role: "assistant", content: visible });
+        assistantEl.classList.remove("typing");
+        if (visible && !assistantEl.classList.contains("err")) {
+          messages.push({ role: "assistant", content: visible });
+        }
+
+        const end = tLast != null ? tLast : performance.now();
+        const first = tFirst != null ? tFirst : end;
+        let genMs = Math.max(end - first, 1);
+        const ttftMs = Math.max(first - tRequest, 0);
+        const tokens = usageTokens != null
+          ? usageTokens
+          : estimateTokens(full || reasoningFull);
+        // If generation span is tiny, use whole request time so tok/s isn't absurd
+        if (genMs < 20) genMs = Math.max(end - tRequest, 1);
+        addSpeedMeta(tokens, genMs, ttftMs, serverTps);
+        statusLine.textContent = formatSpeed(tokens, genMs, ttftMs, serverTps).label;
       } catch (e) {
+        streamDone = true;
+        if (paintTimer) clearTimeout(paintTimer);
+        assistantEl.classList.remove("typing");
         assistantEl.textContent = "Error: " + e.message;
         assistantEl.classList.add("err");
         messages.pop();

@@ -16,6 +16,7 @@ dependencies = [
   "huggingface-hub>=2.4.0",
   "langchain-core>=1.7.3",
   "langgraph>=1.2.19",
+  "langgraph-checkpoint-sqlite>=3.0.0",
   "numpy>=2.4.6",
   "nvidia-ml-py>=13.615.71",
   "packaging>=26.3",

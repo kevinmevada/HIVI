@@ -28,9 +28,19 @@ Write-Host "Out:     $OutDir"
 Write-Host "Progress bar appears below (keep this terminal focused)." -ForegroundColor Green
 Write-Host ""
 
+# USB may be unplugged — never inherit stale D:\HIVI HF paths
+$HfHome = Join-Path $Root "Models\.hf_cache"
+New-Item -ItemType Directory -Force -Path $HfHome | Out-Null
+$env:HF_HOME = $HfHome
+$env:HUGGINGFACE_HUB_CACHE = Join-Path $HfHome "hub"
+$env:HF_HUB_CACHE = $env:HUGGINGFACE_HUB_CACHE
+$env:HF_HUB_DISABLE_XET = "1"
 $env:HF_HUB_DISABLE_PROGRESS_BARS = "0"
 $env:PYTHONUNBUFFERED = "1"
 $env:TQDM_MININTERVAL = "0.2"
+
+Write-Host "HF_HOME: $env:HF_HOME (local; Xet off)" -ForegroundColor DarkGray
+Write-Host ""
 
 if ($Include) {
     uv run hf download $Repo --include $Include --local-dir $OutDir
