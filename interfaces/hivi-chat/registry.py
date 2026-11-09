@@ -20,6 +20,7 @@ class ModelEntry:
     engine: str  # "colibri" | "llama"
     engine_reason: str
     colibri_path: str | None = None
+    vision_projector_path: str | None = None
 
 
 def _quant(name: str) -> str:
@@ -28,6 +29,14 @@ def _quant(name: str) -> str:
 
 
 def _params(name: str, rel: str) -> str:
+    if re.search(r"(?i)qwen3\.6-35b-a3b|35b-a3b", name) or re.search(
+        r"(?i)qwen3\.6-35b-a3b|35b-a3b", rel
+    ):
+        return "35B MoE (~3B active)"
+    if re.search(r"(?i)gemma-4-26b-a4b|26b-a4b", name) or re.search(
+        r"(?i)gemma-4-26b-a4b|26b-a4b", rel
+    ):
+        return "26B MoE (~4B active)"
     if re.search(r"(?i)deepseek-coder-v2-lite", name):
         return "16B MoE (~2.4B active)"
     if re.search(r"(?i)qwen3-coder-30b-a3b|30b-a3b", name) or re.search(
@@ -35,7 +44,7 @@ def _params(name: str, rel: str) -> str:
     ):
         return "30B MoE (~3B active)"
     if re.search(r"(?i)gpt-oss-(\d+)", name):
-        return f"{re.search(r'(?i)gpt-oss-(\d+)', name).group(1)}B"
+        return f"{re.search(r'(?i)gpt-oss-(\d+)', name).group(1)}B MoE"
     m = re.search(r"(?i)(\d+(?:\.\d+)?)[Bb](?:-|_|\.|$)", name)
     if m:
         return f"{m.group(1)}B"
@@ -66,6 +75,18 @@ def _pick_engine(name: str, rel: str) -> tuple[str, str]:
 
 def _display_name(stem: str, rel: str) -> str:
     low = rel.lower().replace("\\", "/")
+    if "mmproj-" in stem.lower():
+        return "Qwen3.6 Vision Projector (mmproj F16)"
+    if "qwen3.6-35b-a3b-uncensored-heretic" in low:
+        return "Qwen3.6-35B-A3B Heretic"
+    if "qwen3.6-35b-a3b" in low:
+        return "Qwen3.6-35B-A3B"
+    if "gemma-4-26b-a4b" in low:
+        return "Gemma 4 26B-A4B IT"
+    if "qwen3.5-9b" in low:
+        return "Qwen3.5-9B"
+    if "gpt-oss" in low:
+        return "GPT-OSS-20B"
     if "rvn" in stem.lower() or "heretic-abliterated-uncensored" in low:
         return "Qwen3.8-27B RVN Heretic"
     if "jonathan-coletti" in low:
@@ -74,8 +95,6 @@ def _display_name(stem: str, rel: str) -> str:
         return "Qwen3.8-27B Unsloth"
     if "hivemind" in low:
         return "Qwen3-8B Hivemind Heretic"
-    if "gpt-oss" in low:
-        return "gpt-oss-20b"
     s = stem
     s = re.sub(r"(?i)-(UD-)?(MXFP4|Q\d+_K(?:_[A-Z]+)?|Q\d+_0|IQ\d+\w*|imat)$", "", s)
     s = s.replace("-", " ").replace("_", " ")
@@ -89,6 +108,8 @@ def scan_models() -> list[ModelEntry]:
     for gguf in sorted(MODELS.rglob("*.gguf")):
         rel = str(gguf.relative_to(MODELS))
         stem = gguf.stem
+        if stem.lower().startswith("mmproj-"):
+            continue
         mid = re.sub(r"[^a-zA-Z0-9]+", "-", stem).strip("-").lower()
         engine, reason = _pick_engine(stem, rel)
         colibri = gguf.with_suffix(".colibri")
@@ -96,6 +117,11 @@ def scan_models() -> list[ModelEntry]:
         if not colibri.exists():
             alt = gguf.parent / f"{stem}.colibri"
             colibri = alt if alt.exists() else colibri
+        projector = None
+        if "qwen3.6-35b-a3b" in rel.lower().replace("\\", "/") and "uncensored-heretic" not in rel.lower():
+            candidate = gguf.parent / "mmproj-F16.gguf"
+            if candidate.exists():
+                projector = str(candidate)
         out.append(
             ModelEntry(
                 id=mid,
@@ -107,6 +133,7 @@ def scan_models() -> list[ModelEntry]:
                 engine=engine,
                 engine_reason=reason,
                 colibri_path=str(colibri) if colibri.exists() else None,
+                vision_projector_path=projector,
             )
         )
     return out

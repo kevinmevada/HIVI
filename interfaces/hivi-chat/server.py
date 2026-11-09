@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from haie import plan_request
 from registry import get_model, models_as_dicts
+from routing import select_model as route_model
 from runtime import BACKEND_BASE, STATE, select_model, status_dict, stop_runtime
 
 HERE = Path(__file__).resolve().parent
@@ -56,9 +58,72 @@ def api_models():
     return {"models": models_as_dicts()}
 
 
+@app.post("/api/route")
+async def api_route(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(400, "prompt must be a non-empty string")
+    decision = route_model(prompt)
+    return {
+        "model": None if decision.model is None else {
+            "id": decision.model.id,
+            "name": decision.model.name,
+            "engine": decision.model.engine,
+            "params": decision.model.params,
+            "quant": decision.model.quant,
+        },
+        "task": decision.classification.task,
+        "complexity": decision.classification.complexity,
+        "score": decision.score,
+        "reason": decision.reason,
+    }
+
+
 @app.get("/api/status")
 def api_status():
     return status_dict()
+
+
+@app.get("/api/download/status")
+def api_download_status():
+    root = (
+        Path(__file__).resolve().parents[2]
+        / "Models"
+        / "General"
+        / "NVIDIA"
+        / "Nemotron-3.5-Bolt-74B-A9B"
+    )
+    now = time.time()
+    files = []
+    incomplete_bytes = 0
+    completed_bytes = 0
+    for path in root.rglob("*"):
+        if not path.is_file() or ".cache" not in path.parts:
+            continue
+        size = path.stat().st_size
+        is_incomplete = path.name.endswith(".incomplete")
+        if is_incomplete:
+            incomplete_bytes += size
+        else:
+            completed_bytes += size
+        files.append(
+            {
+                "name": str(path.relative_to(root)),
+                "bytes": size,
+                "incomplete": is_incomplete,
+                "modified": path.stat().st_mtime,
+            }
+        )
+    active = any(now - item["modified"] < 60 for item in files if item["incomplete"])
+    return {
+        "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
+        "out_dir": str(root),
+        "active": active,
+        "incomplete_bytes": incomplete_bytes,
+        "completed_bytes": completed_bytes,
+        "files": sorted(files, key=lambda item: item["name"]),
+    }
 
 
 @app.post("/api/select")

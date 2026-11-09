@@ -1,4 +1,5 @@
 routing:
   strategy: capability
   fallback_model: null
+  max_size_gb: null
   rules: []

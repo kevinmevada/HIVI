@@ -364,7 +364,8 @@
 
     function optionLabel(m) {
       const eng = m.engine === "colibri" ? "Colibrì" : "llama.cpp";
-      return `${m.name} · ${m.params} · ${m.quant} · ${m.size_gb} GB · ${eng}`;
+      const vision = m.vision_projector_path ? " · vision ready" : "";
+      return `${m.name} · ${m.params} · ${m.quant} · ${m.size_gb} GB · ${eng}${vision}`;
     }
 
     async function loadModels() {
