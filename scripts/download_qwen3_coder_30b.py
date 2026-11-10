@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[1])
 OUT = ROOT / "Models/Coding/unsloth/qwen3-coder-30b-a3b-instruct-q4_k_m"
 CACHE = ROOT / "Models/.hf_cache"
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[1])
 OUT = ROOT / "Models/General/ggml-org/gpt-oss-20b-gguf"
 CACHE = ROOT / "Models/.hf_cache"
 

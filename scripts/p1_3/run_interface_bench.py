@@ -12,7 +12,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 P13 = ROOT / "data/P1_3"
 MATRIX = json.loads((P13 / "configs/interface_matrix.json").read_text(encoding="utf-8"))
 PROMPTS = json.loads((P13 / "prompts/speed_5.json").read_text(encoding="utf-8"))

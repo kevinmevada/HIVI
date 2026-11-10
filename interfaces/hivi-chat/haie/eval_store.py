@@ -6,7 +6,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+from hivi_paths import paths  # noqa: E402
+
+ROOT = paths.repo_root()
 EVAL_DIR = ROOT / "data" / "haie"
 EVAL_PATH = EVAL_DIR / "eval.jsonl"
 

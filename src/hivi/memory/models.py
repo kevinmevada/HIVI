@@ -1,13 +1,13 @@
 """Typed memory records for the HIVI memory gateway (provider-agnostic)."""
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class MemoryType(str, Enum):
+class MemoryType(StrEnum):
     EPISODIC = "episodic"
     SEMANTIC = "semantic"
     PROCEDURAL = "procedural"
@@ -18,7 +18,7 @@ class MemoryType(str, Enum):
     OPEN_QUESTION = "open_question"
 
 
-class MemoryStatus(str, Enum):
+class MemoryStatus(StrEnum):
     UNVERIFIED = "unverified"
     SUPPORTED = "supported"
     VERIFIED = "verified"
@@ -27,7 +27,7 @@ class MemoryStatus(str, Enum):
     INVALIDATED = "invalidated"
 
 
-class RecallBudget(str, Enum):
+class RecallBudget(StrEnum):
     LOW = "low"
     MID = "mid"
     HIGH = "high"
@@ -124,7 +124,7 @@ class ReflectResult(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
-class CurateOperation(str, Enum):
+class CurateOperation(StrEnum):
     CREATE_BANK = "create_bank"
     LIST_BANKS = "list_banks"
 

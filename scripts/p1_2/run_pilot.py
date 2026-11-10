@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 sys.path.insert(0, str(ROOT / "scripts" / "p1_2"))
 from classify_response import classify_response  # noqa: E402
 

@@ -1,6 +1,8 @@
 """P1.2 Stage 1 — validate XSTest / OR-Bench integrity and write stage1 report."""
 from __future__ import annotations
 
+import os
+
 import csv
 import hashlib
 import json
@@ -8,7 +10,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 P12 = ROOT / "data/P1_2"
 XSTEST = P12 / "datasets/xstest/xstest_prompts.csv"
 OR_HARD = P12 / "datasets/or_bench/or-bench-hard-1k.csv"

@@ -25,6 +25,13 @@ class MemoryGraphState(TypedDict, total=False):
     deliverable_ok: bool
     verify_detail: str | None
     error: str | None
+    # ProjectRoom generate → test → retry loop
+    attempt: int
+    max_attempts: int
+    generated_source: str | None
+    generation_feedback: str | None
+    generated_by: str | None
+    review_note: str | None
 
 
 def make_memory_nodes(mm: MemoryManager):

@@ -13,7 +13,9 @@ from haie.types import Understanding
 
 from .metrics import compute_classification_metrics
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+from hivi_paths import paths  # noqa: E402
+
+ROOT = paths.repo_root()
 BASELINE_PATH = ROOT / "data" / "haie" / "V1.2_P0_BASELINE.json"
 LABELED_PATH = ROOT / "data" / "haie" / "p1" / "labeled_set.jsonl"
 REPORT_DIR = ROOT / "data" / "haie" / "p1" / "reports"

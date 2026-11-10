@@ -11,13 +11,15 @@ Usage:
 """
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import sys
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(ROOT / "interfaces" / "hivi-chat"))
 
 from haie.calibration.evaluate import (  # noqa: E402

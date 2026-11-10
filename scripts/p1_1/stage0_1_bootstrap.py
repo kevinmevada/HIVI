@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 P10 = ROOT / "data" / "P1_0"
 P11 = ROOT / "data" / "P1_1"
 INV = P10 / "P1_0_MASTER_INVENTORY.json"

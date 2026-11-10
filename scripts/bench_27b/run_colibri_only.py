@@ -1,6 +1,8 @@
 """Colibrì-only Config A speed matrix for all three 27B models."""
 from __future__ import annotations
 
+import os
+
 import csv
 import json
 import re
@@ -10,10 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 OUT = ROOT / "benchmarks/27b_comparison"
 LOG = OUT / "logs" / "colibri_only"
-COLI = Path(r"C:\Users\mevad\Downloads\colibri-main\colibri-main\c\coli")
+COLI = Path(
+    os.environ.get("HIVI_COLI")
+    or ROOT / "src" / "hivi" / "inference" / "colibri-LLM-main" / "c" / "coli"
+)
 PROMPT = "Reply with exactly one word: pong"
 CTX = 4096
 NGEN = 64

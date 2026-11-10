@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -13,9 +15,17 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from haie import plan_request
+from hivi_paths import paths
 from registry import get_model, models_as_dicts
 from routing import select_model as route_model
-from runtime import BACKEND_BASE, STATE, select_model, status_dict, stop_runtime
+from runtime import (
+    BACKEND_BASE,
+    STATE,
+    SWITCH_LOCK,
+    select_model,
+    status_dict,
+    stop_runtime,
+)
 
 HERE = Path(__file__).resolve().parent
 app = FastAPI(title="HIVI")
@@ -27,9 +37,70 @@ _HAIE_EXPOSE = (
     "X-HIVI-Adaptive-Bucket, X-HIVI-Adaptive-Temp, "
     "X-HIVI-Adaptive-Max-Tokens, X-HIVI-Adaptive-Think"
 )
+# How long a memory (Hindsight) request may wait for a model switch to finish,
+# and how long a switch waits for in-flight memory requests before proceeding.
+_MEMORY_WAIT_S = float(os.environ.get("HIVI_MEMORY_WAIT_S", "600"))
+_MEMORY_DRAIN_S = float(os.environ.get("HIVI_MEMORY_DRAIN_S", "120"))
+
+
+class BackendGate:
+    """Keeps memory traffic and model switches from stepping on each other.
+
+    Hindsight shares the one local backend with chat. Without coordination a
+    model switch kills the backend mid-extraction and the retain fails. With the
+    gate, a switch first waits for in-flight memory calls to finish, and memory
+    calls that arrive during the switch wait for the new model instead of
+    hitting a dead port.
+    """
+
+    def __init__(self) -> None:
+        self._open = asyncio.Event()
+        self._open.set()
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._inflight = 0
+
+    @property
+    def inflight(self) -> int:
+        return self._inflight
+
+    @property
+    def is_open(self) -> bool:
+        return self._open.is_set()
+
+    def close(self) -> None:
+        self._open.clear()
+
+    def open(self) -> None:
+        self._open.set()
+
+    async def wait_idle(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def enter(self, timeout: float) -> bool:
+        try:
+            await asyncio.wait_for(self._open.wait(), timeout)
+        except asyncio.TimeoutError:
+            return False
+        self._inflight += 1
+        self._idle.clear()
+        return True
+
+    def leave(self) -> None:
+        self._inflight = max(0, self._inflight - 1)
+        if self._inflight == 0:
+            self._idle.set()
+
+
+GATE = BackendGate()
 
 
 def _adapt_chat_body(raw: bytes) -> tuple[bytes, dict[str, str]]:
+    # Blocking (may call the backend for semantic classify) — run via to_thread.
     """HAIE: fast-path or semantic classify, then inject dynamic sampling params."""
     extra: dict[str, str] = {}
     try:
@@ -64,7 +135,8 @@ async def api_route(request: Request):
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise HTTPException(400, "prompt must be a non-empty string")
-    decision = route_model(prompt)
+    has_image = bool(body.get("has_image"))
+    decision = await asyncio.to_thread(route_model, prompt, has_image=has_image)
     return {
         "model": None if decision.model is None else {
             "id": decision.model.id,
@@ -81,44 +153,41 @@ async def api_route(request: Request):
 
 
 @app.get("/api/status")
-def api_status():
-    return status_dict()
+async def api_status():
+    out = await asyncio.to_thread(status_dict)
+    out["memory_inflight"] = GATE.inflight
+    return out
 
 
 @app.get("/api/download/status")
 def api_download_status():
-    root = (
-        Path(__file__).resolve().parents[2]
-        / "Models"
-        / "General"
-        / "NVIDIA"
-        / "Nemotron-3.5-Bolt-74B-A9B"
-    )
+    """In-progress Hugging Face downloads anywhere under the models root."""
+    root = paths.models_root()
     now = time.time()
     files = []
     incomplete_bytes = 0
     completed_bytes = 0
-    for path in root.rglob("*"):
-        if not path.is_file() or ".cache" not in path.parts:
-            continue
-        size = path.stat().st_size
-        is_incomplete = path.name.endswith(".incomplete")
-        if is_incomplete:
-            incomplete_bytes += size
-        else:
-            completed_bytes += size
-        files.append(
-            {
-                "name": str(path.relative_to(root)),
-                "bytes": size,
-                "incomplete": is_incomplete,
-                "modified": path.stat().st_mtime,
-            }
-        )
+    if root.exists():
+        for path in root.rglob("*"):
+            if not path.is_file() or ".cache" not in path.parts:
+                continue
+            st = path.stat()
+            is_incomplete = path.name.endswith(".incomplete")
+            if is_incomplete:
+                incomplete_bytes += st.st_size
+            else:
+                completed_bytes += st.st_size
+            files.append(
+                {
+                    "name": str(path.relative_to(root)),
+                    "bytes": st.st_size,
+                    "incomplete": is_incomplete,
+                    "modified": st.st_mtime,
+                }
+            )
     active = any(now - item["modified"] < 60 for item in files if item["incomplete"])
     return {
-        "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
-        "out_dir": str(root),
+        "models_root": str(root),
         "active": active,
         "incomplete_bytes": incomplete_bytes,
         "completed_bytes": completed_bytes,
@@ -132,17 +201,36 @@ async def api_select(request: Request):
     mid = body.get("id")
     if not mid:
         raise HTTPException(400, "id required")
-    model = get_model(mid)
+    model = await asyncio.to_thread(get_model, mid)
     if not model:
         raise HTTPException(404, f"unknown model id: {mid}")
-    state = select_model(model)
+    if not SWITCH_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "a model switch is already in progress")
+    GATE.close()
+    try:
+        drained = await GATE.wait_idle(_MEMORY_DRAIN_S)
+        if not drained:
+            print(f"HIVI: switching with {GATE.inflight} memory request(s) still running")
+        # Model loads take minutes; keep the event loop free for /api/status etc.
+        state = await asyncio.to_thread(select_model, model)
+    finally:
+        GATE.open()
+        SWITCH_LOCK.release()
     code = 200 if state.status == "ready" else 500
     return JSONResponse(status_dict(), status_code=code)
 
 
 @app.post("/api/stop")
-def api_stop():
-    stop_runtime()
+async def api_stop():
+    if not SWITCH_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "a model switch is in progress")
+    GATE.close()
+    try:
+        await GATE.wait_idle(_MEMORY_DRAIN_S)
+        await asyncio.to_thread(stop_runtime)
+    finally:
+        GATE.open()
+        SWITCH_LOCK.release()
     return status_dict()
 
 
@@ -243,7 +331,7 @@ async def openai_proxy(path: str, request: Request):
         if skip:
             adapted, extra = raw, {}
         else:
-            adapted, extra = _adapt_chat_body(raw)
+            adapted, extra = await asyncio.to_thread(_adapt_chat_body, raw)
 
         async def receive():
             return {"type": "http.request", "body": adapted, "more_body": False}
@@ -258,6 +346,45 @@ async def openai_proxy(path: str, request: Request):
             return await _proxy_stream(request, f"v1/{path}", adapted, extra)
         return await _proxy_buffered(request, f"v1/{path}", adapted, extra)
     return await _proxy_buffered(request, f"v1/{path}")
+
+
+def _current_backend_model() -> str | None:
+    """The id the running backend advertises (model names change on every switch)."""
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            r = client.get(f"{BACKEND_BASE}/v1/models")
+            rows = r.json().get("data") or []
+            if rows and isinstance(rows[0], dict) and rows[0].get("id"):
+                return str(rows[0]["id"])
+    except Exception:
+        return None
+    return None
+
+
+@app.api_route("/memory/v1/{path:path}", methods=["GET", "POST"])
+async def memory_proxy(path: str, request: Request):
+    """OpenAI-compatible endpoint for Hindsight (point its LLM base URL here).
+
+    No HAIE param injection, the model name is rewritten to whatever is loaded
+    now, and requests wait out model switches instead of failing.
+    """
+    if not await GATE.enter(_MEMORY_WAIT_S):
+        raise HTTPException(503, "backend switching; memory request timed out waiting")
+    try:
+        raw = await request.body()
+        if request.method == "POST" and raw:
+            try:
+                body = json.loads(raw.decode("utf-8"))
+                if isinstance(body, dict) and "model" in body:
+                    current = await asyncio.to_thread(_current_backend_model)
+                    if current:
+                        body["model"] = current
+                    raw = json.dumps(body).encode("utf-8")
+            except Exception:
+                pass
+        return await _proxy_buffered(request, f"v1/{path}", raw)
+    finally:
+        GATE.leave()
 
 
 @app.get("/health")

@@ -15,7 +15,7 @@ def model_capabilities(model: ModelEntry) -> frozenset[str]:
         capabilities.add("coding")
     if any(term in text for term in ("reason", "27b", "30b", "gpt-oss")):
         capabilities.add("reasoning")
-    if any(term in text for term in ("vision", "vl", "llava")):
+    if getattr(model, "vision_projector_path", None) or any(term in text for term in ("vision", "-vl", " vl", "llava")):
         capabilities.add("vision")
     if "creative" in text:
         capabilities.add("creative")

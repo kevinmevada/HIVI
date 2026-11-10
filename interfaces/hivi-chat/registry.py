@@ -5,8 +5,12 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
-MODELS = ROOT / "Models"
+from hivi_paths import paths
+
+
+def models_root() -> Path:
+    """Resolved at call time so HIVI_MODELS_ROOT / storage.yaml changes apply."""
+    return paths.models_root()
 
 
 @dataclass
@@ -53,9 +57,12 @@ def _params(name: str, rel: str) -> str:
     return "?"
 
 
-def _pick_engine(name: str, rel: str) -> tuple[str, str]:
+def _pick_engine(name: str, rel: str, *, has_projector: bool = False) -> tuple[str, str]:
     n = name.lower()
     r = rel.lower().replace("\\", "/")
+    # Vision needs llama-server --mmproj; Colibrì has no GGUF projector path.
+    if has_projector:
+        return "llama", "vision projector found → llama.cpp with --mmproj"
     # Explicit llama-only families (Colibrì unsupported)
     if "gpt-oss" in n or "gpt-oss" in r:
         return "llama", "architecture gpt-oss not supported by Colibrì"
@@ -101,27 +108,32 @@ def _display_name(stem: str, rel: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def scan_models() -> list[ModelEntry]:
+def _find_projector(gguf: Path) -> Path | None:
+    """A vision projector (mmproj-*.gguf) living in the model's own folder."""
+    for candidate in sorted(gguf.parent.glob("mmproj*.gguf")):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def scan_models(root: Path | None = None) -> list[ModelEntry]:
     out: list[ModelEntry] = []
-    if not MODELS.exists():
+    models_dir = Path(root) if root is not None else models_root()
+    if not models_dir.exists():
         return out
-    for gguf in sorted(MODELS.rglob("*.gguf")):
-        rel = str(gguf.relative_to(MODELS))
+    for gguf in sorted(models_dir.rglob("*.gguf")):
+        rel = str(gguf.relative_to(models_dir))
         stem = gguf.stem
-        if stem.lower().startswith("mmproj-"):
+        if stem.lower().startswith("mmproj"):
             continue
         mid = re.sub(r"[^a-zA-Z0-9]+", "-", stem).strip("-").lower()
-        engine, reason = _pick_engine(stem, rel)
+        projector = _find_projector(gguf)
+        engine, reason = _pick_engine(stem, rel, has_projector=projector is not None)
         colibri = gguf.with_suffix(".colibri")
         # also accept NAME.colibri next to file with same stem
         if not colibri.exists():
             alt = gguf.parent / f"{stem}.colibri"
             colibri = alt if alt.exists() else colibri
-        projector = None
-        if "qwen3.6-35b-a3b" in rel.lower().replace("\\", "/") and "uncensored-heretic" not in rel.lower():
-            candidate = gguf.parent / "mmproj-F16.gguf"
-            if candidate.exists():
-                projector = str(candidate)
         out.append(
             ModelEntry(
                 id=mid,
@@ -133,7 +145,7 @@ def scan_models() -> list[ModelEntry]:
                 engine=engine,
                 engine_reason=reason,
                 colibri_path=str(colibri) if colibri.exists() else None,
-                vision_projector_path=projector,
+                vision_projector_path=str(projector) if projector else None,
             )
         )
     return out

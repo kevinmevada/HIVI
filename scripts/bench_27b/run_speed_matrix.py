@@ -11,13 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 OUT = ROOT / "benchmarks/27b_comparison"
 LOG = OUT / "logs"
 RAW = OUT / "raw"
 CLI = ROOT / "data/P1_1/runtime/llama.cpp/bin/llama-cli.exe"
 BIN = CLI.parent
-COLI = Path(r"C:\Users\mevad\Downloads\colibri-main\colibri-main\c\coli")
+COLI = Path(
+    os.environ.get("HIVI_COLI")
+    or ROOT / "src" / "hivi" / "inference" / "colibri-LLM-main" / "c" / "coli"
+)
 CFG = json.loads((OUT / "runtime_configurations.json").read_text(encoding="utf-8"))["config_A_conservative"]
 PROMPT = (OUT / "prompts/speed_prompt.txt").read_text(encoding="utf-8").strip()
 

@@ -1,12 +1,14 @@
 """Build P1.2 pilot prompt set: 20 safe + 10 unsafe from XSTest (unaltered text)."""
 from __future__ import annotations
 
+import os
+
 import csv
 import json
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[2])
 XSTEST = ROOT / "data/P1_2/datasets/xstest/xstest_prompts.csv"
 OUT = ROOT / "data/P1_2/prompts"
 

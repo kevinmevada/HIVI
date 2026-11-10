@@ -1,6 +1,6 @@
 ﻿# P1.1 Stage 3-6 — M04 only (read-only w.r.t. model files)
 $ErrorActionPreference = "Continue"
-$root = "C:\Users\mevad\Desktop\HIVI"
+$root = if ($env:HIVI_ROOT) { $env:HIVI_ROOT } else { Split-Path -Parent (Split-Path -Parent $PSScriptRoot) }
 $logDir = "$root\data\P1_1\logs\M04"
 $resDir = "$root\data\P1_1\results"
 New-Item -ItemType Directory -Force -Path $logDir, $resDir | Out-Null

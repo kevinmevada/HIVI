@@ -20,14 +20,19 @@ _RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
-def classify_prompt(prompt: str) -> PromptClassification:
+def classify_prompt(prompt: str, *, has_image: bool = False) -> PromptClassification:
     """Return a stable, dependency-free classification for a user prompt."""
     normalized = re.sub(r"\s+", " ", prompt.strip().lower())
     capabilities: set[str] = set()
     task = "general"
+    if has_image:
+        # An attached image needs a vision model whatever the text says.
+        capabilities.add("vision")
+        task = "vision"
     for candidate, terms, required in _RULES:
         if any(term in normalized for term in terms):
-            task = candidate
+            if task == "general":
+                task = candidate
             capabilities.update(required)
             break
     word_count = len(normalized.split())

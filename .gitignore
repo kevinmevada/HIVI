@@ -62,3 +62,8 @@ data/P1_1/runtime/
 
 # Vendored notebooks that may embed API tokens
 src/hivi/inference/airllm-main/air_llm/tests/test_notebooks/
+
+# Third-party inference engines — fetched by scripts/fetch_backends.ps1 (see docs/BACKENDS.md)
+src/hivi/inference/llama.cpp-master/
+src/hivi/inference/colibri-LLM-main/
+src/hivi/inference/airllm-main/

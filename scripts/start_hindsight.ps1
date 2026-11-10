@@ -1,4 +1,4 @@
-﻿# Start Hindsight API for HIVI (pg0 + shared llama.cpp at :8080/v1).
+﻿# Start Hindsight API for HIVI (pg0 + shared backend via the HIVI memory gateway).
 # Does NOT start a second inference process.
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -15,7 +15,20 @@ $env:HF_HUB_DISABLE_XET = "1"
 
 $env:HINDSIGHT_HOME = Join-Path $Root "data\hindsight"
 $env:HINDSIGHT_API_LLM_PROVIDER = "openai"
-$env:HINDSIGHT_API_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
+# Prefer the HIVI memory gateway (:7860/memory/v1): it waits out model switches
+# and always targets whichever model is loaded. Falls back to the raw backend.
+if ($env:HIVI_MEMORY_LLM_URL) {
+    $env:HINDSIGHT_API_LLM_BASE_URL = $env:HIVI_MEMORY_LLM_URL
+} else {
+    $gateway = "http://127.0.0.1:7860/memory/v1"
+    try {
+        Invoke-RestMethod -Uri "http://127.0.0.1:7860/api/status" -TimeoutSec 3 | Out-Null
+        $env:HINDSIGHT_API_LLM_BASE_URL = $gateway
+    } catch {
+        Write-Host "WARN: HIVI control server not running; Hindsight will talk to :8080 directly and fail during model switches." -ForegroundColor Yellow
+        $env:HINDSIGHT_API_LLM_BASE_URL = "http://127.0.0.1:8080/v1"
+    }
+}
 $env:HINDSIGHT_API_LLM_API_KEY = "hivi-local"
 # Auto-resolve model id from shared /v1/models unless an explicit non-sentinel is set.
 # "local" is treated as unresolved (llama.cpp/Colibrì rarely advertise that id).

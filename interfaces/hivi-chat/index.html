@@ -201,6 +201,36 @@
       font: inherit;
     }
     .err { color: var(--danger); }
+    .row.with-attach { grid-template-columns: auto 1fr auto; }
+    button.attach {
+      border: 1px solid var(--line);
+      border-radius: 0.35rem;
+      background: var(--bg2);
+      color: var(--text);
+      padding: 0 0.85rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    button.attach:disabled { opacity: 0.35; cursor: not-allowed; }
+    .attach-chip, .route-hint {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .attach-chip.show, .route-hint.show { display: flex; }
+    .attach-chip img { height: 2.4rem; border-radius: 0.25rem; border: 1px solid var(--line); }
+    .attach-chip button, .route-hint button {
+      border: 1px solid var(--line);
+      border-radius: 0.25rem;
+      background: var(--bg2);
+      color: var(--text);
+      padding: 0.15rem 0.5rem;
+      cursor: pointer;
+      font: inherit;
+    }
+    .bubble img.inline-img { display: block; max-width: 16rem; margin-top: 0.4rem; border-radius: 0.3rem; }
   </style>
 </head>
 <body>
@@ -224,10 +254,18 @@
     <div class="opts">
       <span id="adaptiveHint">HAIE · fast / heuristic / semantic · params-only</span>
     </div>
-    <div class="row">
+    <div class="route-hint" id="routeHint"></div>
+    <div class="attach-chip" id="attachChip">
+      <img id="attachPreview" alt="attached image preview" />
+      <span id="attachName"></span>
+      <button type="button" id="attachClear">Remove</button>
+    </div>
+    <div class="row with-attach">
+      <button class="attach" id="attachBtn" type="button" title="Attach an image (needs a model with a vision projector)" disabled>Image</button>
       <textarea id="input" placeholder="Message HIVI…" autofocus></textarea>
       <button class="send" id="send" type="submit">Send</button>
     </div>
+    <input type="file" id="attachInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
   </form>
 
   <script>
@@ -247,6 +285,16 @@
     let activeModelId = null;
     let openaiModelId = "local";
     let busy = false;
+    let activeVision = false;
+    let pendingImage = null; // { dataUrl, name }
+    const attachBtn = document.getElementById("attachBtn");
+    const attachInput = document.getElementById("attachInput");
+    const attachChip = document.getElementById("attachChip");
+    const attachPreview = document.getElementById("attachPreview");
+    const attachName = document.getElementById("attachName");
+    const attachClear = document.getElementById("attachClear");
+    const routeHint = document.getElementById("routeHint");
+    const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
     const SYSTEM = "You are HIVI, a careful local assistant. Rules: (1) Prefer accurate, grounded answers. (2) If you do not know, say you do not know — do not invent facts, citations, file paths, APIs, or personal details. (3) If the question is ambiguous, ask a short clarifying question. (4) Answer directly with no chain-of-thought and no repetition. (5) For code, only claim behavior you are confident about.";
     const OPEN = "<" + "think" + ">";
@@ -354,6 +402,58 @@
       stopBtn.disabled = v;
       sendBtn.disabled = v;
       modelSelect.disabled = v;
+      attachBtn.disabled = v || !activeVision;
+    }
+
+    function setPendingImage(img) {
+      pendingImage = img;
+      if (img) {
+        attachPreview.src = img.dataUrl;
+        attachName.textContent = img.name;
+        attachChip.classList.add("show");
+      } else {
+        attachPreview.removeAttribute("src");
+        attachName.textContent = "";
+        attachChip.classList.remove("show");
+        attachInput.value = "";
+      }
+    }
+
+    function hideRouteHint() {
+      routeHint.classList.remove("show");
+      routeHint.textContent = "";
+    }
+
+    // A1 router: suggest (never force) a better-suited model. Switching takes
+    // minutes, so the user decides.
+    async function suggestRoute(text, hasImage) {
+      try {
+        const r = await fetch("/api/route", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: text || "image", has_image: hasImage }),
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        if (!d.model || d.model.id === activeModelId || !d.score) { hideRouteHint(); return; }
+        routeHint.textContent = "";
+        const label = document.createElement("span");
+        label.textContent = `Suggested for ${d.task}: ${d.model.name}`;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Switch";
+        btn.addEventListener("click", () => {
+          modelSelect.value = d.model.id;
+          hideRouteHint();
+          loadSelected();
+        });
+        const dismiss = document.createElement("button");
+        dismiss.type = "button";
+        dismiss.textContent = "Dismiss";
+        dismiss.addEventListener("click", hideRouteHint);
+        routeHint.append(label, btn, dismiss);
+        routeHint.classList.add("show");
+      } catch (_) {}
     }
 
     function renderBadge(engine, status) {
@@ -402,6 +502,9 @@
         const r = await fetch("/api/status");
         const s = await r.json();
         activeModelId = s.model_id;
+        activeVision = Boolean(s.vision) && (s.status === "ready" || s.healthy);
+        attachBtn.disabled = busy || !activeVision;
+        if (!activeVision && pendingImage) setPendingImage(null);
         renderBadge(s.engine, s.status);
         statusLine.textContent = s.detail || s.status;
         statusLine.classList.toggle("err", s.status === "error");
@@ -433,7 +536,9 @@
         });
         const s = await r.json();
         await refreshStatus();
-        if (!r.ok || s.status !== "ready") {
+        if (r.status === 409) {
+          addBubble("system", "A model switch is already running — wait for it to finish.", "err");
+        } else if (!r.ok || s.status !== "ready") {
           addBubble("system", "Failed: " + (s.detail || r.status), "err");
         } else {
           messages = [];
@@ -463,8 +568,28 @@
         addBubble("system", "Load a model first");
         return;
       }
-      messages.push({ role: "user", content: text });
-      addBubble("user", text);
+      const image = pendingImage;
+      if (image && !activeVision) {
+        addBubble("system", "This model has no vision projector — load a vision model to send images.", "err");
+        return;
+      }
+      const promptText = text || "Describe this image.";
+      const content = image
+        ? [
+            { type: "text", text: promptText },
+            { type: "image_url", image_url: { url: image.dataUrl } },
+          ]
+        : promptText;
+      messages.push({ role: "user", content });
+      const userEl = addBubble("user", promptText);
+      if (image) {
+        const img = document.createElement("img");
+        img.className = "inline-img";
+        img.src = image.dataUrl;
+        img.alt = image.name;
+        userEl.appendChild(img);
+        setPendingImage(null);
+      }
       const assistantEl = addBubble("assistant", "");
       assistantEl.classList.add("typing");
       setBusy(true);
@@ -634,8 +759,9 @@
     form.addEventListener("submit", (e) => {
       e.preventDefault();
       const text = input.value.trim();
-      if (!text || busy) return;
+      if ((!text && !pendingImage) || busy) return;
       input.value = "";
+      suggestRoute(text, Boolean(pendingImage));
       sendMessage(text);
     });
     input.addEventListener("keydown", (e) => {
@@ -643,6 +769,20 @@
         e.preventDefault();
         form.requestSubmit();
       }
+    });
+    attachBtn.addEventListener("click", () => attachInput.click());
+    attachClear.addEventListener("click", () => setPendingImage(null));
+    attachInput.addEventListener("change", () => {
+      const file = attachInput.files && attachInput.files[0];
+      if (!file) return;
+      if (file.size > MAX_IMAGE_BYTES) {
+        addBubble("system", "Image is larger than 8 MB — resize it first.", "err");
+        attachInput.value = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => setPendingImage({ dataUrl: String(reader.result), name: file.name });
+      reader.readAsDataURL(file);
     });
     loadBtn.addEventListener("click", loadSelected);
     stopBtn.addEventListener("click", stopModel);

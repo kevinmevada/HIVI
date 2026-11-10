@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 from .models import MemoryType
 
 
-class EventKind(str, Enum):
+class EventKind(StrEnum):
     REQUIREMENT_CHANGE = "requirement_change"
     ARCHITECTURE_DECISION = "architecture_decision"
     TASK_COMPLETED = "task_completed"
@@ -20,7 +20,7 @@ class EventKind(str, Enum):
     CORRECTION = "correction"
 
 
-class RetainPriority(str, Enum):
+class RetainPriority(StrEnum):
     IMMEDIATE = "immediate"
     AFTER_VERIFY = "after_verify"
     DISCARD = "discard"

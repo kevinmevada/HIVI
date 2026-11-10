@@ -1,13 +1,15 @@
 """HAIE V1.1 acceptance: path expectations + optional live classify on loaded model."""
 from __future__ import annotations
 
+import os
+
 import json
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(ROOT / "interfaces" / "hivi-chat"))
 
 from haie import plan_request  # noqa: E402

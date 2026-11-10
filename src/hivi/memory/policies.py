@@ -1,12 +1,12 @@
 """Read/write memory access rules (HIVI governance — not Hindsight ACL)."""
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 from .models import MemoryStatus, MemoryType
 
 
-class ActorRole(str, Enum):
+class ActorRole(StrEnum):
     PROJECT_OWNER = "project_owner"
     PROJECT_DIRECTOR = "project_director"
     FACT_CHECKER = "fact_checker"

@@ -1,10 +1,12 @@
 """Build HAIE V1.2 P1 labeled evaluation set (>=200). Does not touch production routing."""
 from __future__ import annotations
 
+import os
+
 import json
 from pathlib import Path
 
-ROOT = Path(r"C:\Users\mevad\Desktop\HIVI")
+ROOT = Path(os.environ.get("HIVI_ROOT") or Path(__file__).resolve().parents[1])
 OUT = ROOT / "data" / "haie" / "p1" / "labeled_set.jsonl"
 
 

@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
+from hivi_paths import paths
 from registry import ModelEntry, scan_models
 
 from .capabilities import model_capabilities
@@ -23,11 +23,13 @@ def select_model(
     prompt: str,
     models: list[ModelEntry] | None = None,
     policy: RoutingPolicy | None = None,
+    *,
+    has_image: bool = False,
 ) -> RouteDecision:
     """Choose a model without starting or stopping any runtime process."""
-    classification = classify_prompt(prompt)
+    classification = classify_prompt(prompt, has_image=has_image)
     candidates = models if models is not None else scan_models()
-    active_policy = policy or load_policy(Path(__file__).parents[3] / "configs" / "routing.yaml")
+    active_policy = policy or load_policy(paths.repo_root() / "configs" / "routing.yaml")
     eligible = [
         model for model in candidates
         if active_policy.max_size_gb is None or model.size_gb <= active_policy.max_size_gb
