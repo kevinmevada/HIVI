@@ -1,4 +1,9 @@
-"""Scan HIVI Models/ and decide Colibrì vs llama.cpp for each GGUF."""
+"""Scan HIVI Models/ and decide Colibrì vs llama.cpp for each GGUF.
+
+Every file also gets a ``kind``: ``chat`` models are loaded on the main backend
+and listed in the UI; ``embedding`` and ``reranker`` models run as separate
+llama-server side services (see aux_services.py) and never take the chat slot.
+"""
 from __future__ import annotations
 
 import re
@@ -6,6 +11,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from hivi_paths import paths
+
+CHAT = "chat"
+EMBEDDING = "embedding"
+RERANKER = "reranker"
+FIM = "fim"  # base code-completion models: editor autocomplete only, no chat template
 
 
 def models_root() -> Path:
@@ -25,6 +35,20 @@ class ModelEntry:
     engine_reason: str
     colibri_path: str | None = None
     vision_projector_path: str | None = None
+    kind: str = CHAT  # "chat" | "embedding" | "reranker" | "fim"
+
+
+def _kind(name: str, rel: str) -> str:
+    """Embedding / reranker GGUFs are retrieval models, not chat models."""
+    text = f"{name} {rel}".lower()
+    if "rerank" in text:
+        return RERANKER
+    if "embed" in text:
+        return EMBEDDING
+    # Base coder models only continue code; in a chat they produce noise.
+    if "fim" in text or ("qwen2.5-coder" in text and "instruct" not in text):
+        return FIM
+    return CHAT
 
 
 def _quant(name: str) -> str:
@@ -47,8 +71,13 @@ def _params(name: str, rel: str) -> str:
         r"(?i)qwen3-coder-30b-a3b|30b-a3b", rel
     ):
         return "30B MoE (~3B active)"
-    if re.search(r"(?i)gpt-oss-(\d+)", name):
-        return f"{re.search(r'(?i)gpt-oss-(\d+)', name).group(1)}B MoE"
+    # Generic "<total>B-A<active>B" MoE naming (e.g. Nemotron Bolt 74B-A9B)
+    moe = re.search(r"(?i)(\d+(?:\.\d+)?)b[-_]a(\d+(?:\.\d+)?)b", f"{name} {rel}")
+    if moe:
+        return f"{moe.group(1)}B MoE (~{moe.group(2)}B active)"
+    oss = re.search(r"(?i)gpt-oss-(\d+)", name)
+    if oss:
+        return f"{oss.group(1)}B MoE"
     m = re.search(r"(?i)(\d+(?:\.\d+)?)[Bb](?:-|_|\.|$)", name)
     if m:
         return f"{m.group(1)}B"
@@ -57,9 +86,16 @@ def _params(name: str, rel: str) -> str:
     return "?"
 
 
-def _pick_engine(name: str, rel: str, *, has_projector: bool = False) -> tuple[str, str]:
+def _pick_engine(
+    name: str, rel: str, *, has_projector: bool = False, kind: str = CHAT
+) -> tuple[str, str]:
     n = name.lower()
     r = rel.lower().replace("\\", "/")
+    # `coli serve` is a chat server; embeddings/reranking need llama-server flags.
+    if kind == EMBEDDING:
+        return "llama", "embedding model → llama-server --embedding (side service)"
+    if kind == RERANKER:
+        return "llama", "reranker model → llama-server --reranking (side service)"
     # Vision needs llama-server --mmproj; Colibrì has no GGUF projector path.
     if has_projector:
         return "llama", "vision projector found → llama.cpp with --mmproj"
@@ -103,7 +139,7 @@ def _display_name(stem: str, rel: str) -> str:
     if "hivemind" in low:
         return "Qwen3-8B Hivemind Heretic"
     s = stem
-    s = re.sub(r"(?i)-(UD-)?(MXFP4|Q\d+_K(?:_[A-Z]+)?|Q\d+_0|IQ\d+\w*|imat)$", "", s)
+    s = re.sub(r"(?i)[-.](UD-)?(MXFP4|Q\d+_K(?:_[A-Z]+)?|Q\d+_0|IQ\d+\w*|imat)$", "", s)
     s = s.replace("-", " ").replace("_", " ")
     return re.sub(r"\s+", " ", s).strip()
 
@@ -127,8 +163,10 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
         if stem.lower().startswith("mmproj"):
             continue
         mid = re.sub(r"[^a-zA-Z0-9]+", "-", stem).strip("-").lower()
-        projector = _find_projector(gguf)
-        engine, reason = _pick_engine(stem, rel, has_projector=projector is not None)
+        kind = _kind(stem, rel)
+        # Retrieval models never take a vision projector.
+        projector = _find_projector(gguf) if kind == CHAT else None
+        engine, reason = _pick_engine(stem, rel, has_projector=projector is not None, kind=kind)
         colibri = gguf.with_suffix(".colibri")
         # also accept NAME.colibri next to file with same stem
         if not colibri.exists():
@@ -146,14 +184,21 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
                 engine_reason=reason,
                 colibri_path=str(colibri) if colibri.exists() else None,
                 vision_projector_path=str(projector) if projector else None,
+                kind=kind,
             )
         )
     return out
 
 
-def models_as_dicts() -> list[dict]:
-    # Light → heavy (file size), then name for ties
-    models = sorted(scan_models(), key=lambda m: (m.size_gb, m.name.lower()))
+def chat_models(root: Path | None = None) -> list[ModelEntry]:
+    """Models that can be loaded on the main chat backend."""
+    return [m for m in scan_models(root) if m.kind == CHAT]
+
+
+def models_as_dicts(kind: str | None = CHAT) -> list[dict]:
+    """Light → heavy (file size), then name for ties. ``kind=None`` returns everything."""
+    models = [m for m in scan_models() if kind is None or m.kind == kind]
+    models.sort(key=lambda m: (m.size_gb, m.name.lower()))
     return [asdict(m) for m in models]
 
 

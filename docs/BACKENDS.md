@@ -25,6 +25,8 @@ If the Colibrì tag name differs upstream, pass the commit you tested:
 | `HIVI_LLAMA_SERVER` | `data/P1_1/runtime/llama.cpp/bin/llama-server(.exe)`, else `llama-server` on PATH |
 | `HIVI_COLI` | `src/hivi/inference/colibri-LLM-main/c/coli` |
 | `HIVI_BACKEND_PORT` | `8080` |
+| `HIVI_EMBED_PORT` | `8081` (embedding side service, see `MODEL_ROUTER.md`) |
+| `HIVI_RERANK_PORT` | `8082` (reranker side service) |
 | `HIVI_LOG_DIR` | `data/logs` |
 
 ## One-time migration for an existing clone

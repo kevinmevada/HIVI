@@ -1,0 +1,46 @@
+# Which model each agent role runs on.
+#
+# Agents call HIVI's OpenAI endpoint (http://127.0.0.1:7860/v1/chat/completions)
+# with "model" set to a role or alias below. If a different chat model is
+# loaded, HIVI swaps first: it waits for in-flight requests to finish, loads
+# the target model, then answers. Requests that use any other model name are
+# sent to whatever is loaded, exactly as before.
+#
+# Swaps take time (a 20 GB model reloads from disk). Batch agent work by
+# model: run every hivi-heavy step, then every hivi-review step, then return.
+
+aliases:
+  # match: every string must appear in the model's path (case-insensitive).
+  # exclude: none of these may appear. First registry match wins.
+  hivi-heavy:
+    match: ["qwen3.6-35b-a3b"]
+    exclude: ["heretic", "uncensored"]
+  hivi-review:
+    match: ["bolt", "74b"]
+  hivi-fast:
+    match: ["qwen3.5-9b"]
+  hivi-chat:
+    match: ["bolt", "e4b"]
+
+roles:
+  # Level 0 — central command
+  main-chef: hivi-heavy
+  acceptance: hivi-heavy
+  # Level 1 — team leads
+  development-lead: hivi-heavy
+  research-lead: hivi-heavy
+  architecture-lead: hivi-heavy
+  quality-lead: hivi-heavy
+  security-lead: hivi-heavy
+  operations-lead: hivi-heavy
+  # Level 2 — specialists
+  developer: hivi-heavy
+  system-designer: hivi-heavy
+  tester: hivi-heavy
+  researcher: hivi-fast
+  documentation: hivi-fast
+  security-auditor: hivi-review
+  devops: hivi-review
+  integration-reviewer: hivi-review
+  # User-facing status messages
+  status-reporter: hivi-chat

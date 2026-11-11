@@ -1,4 +1,10 @@
-"""HIVI control + chat UI. Routes models to Colibrì or llama.cpp automatically."""
+"""HIVI control + chat UI. Routes models to Colibrì or llama.cpp automatically.
+
+Model router: a chat request whose ``model`` names a role or alias from
+configs/model_roles.yaml (or a registry id) makes HIVI load that model first,
+after in-flight requests finish. Embedding and rerank requests go to their own
+side services (aux_services.py) and never disturb the chat model.
+"""
 from __future__ import annotations
 
 import argparse
@@ -6,18 +12,20 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aux_services
 import httpx
+import model_router
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-
 from haie import plan_request
 from hivi_paths import paths
-from registry import get_model, models_as_dicts
-from routing import select_model as route_model
+from registry import EMBEDDING, RERANKER, ModelEntry, get_model, models_as_dicts
 from runtime import (
     BACKEND_BASE,
     STATE,
@@ -27,8 +35,19 @@ from runtime import (
     stop_runtime,
 )
 
+from routing import select_model as route_model
+
 HERE = Path(__file__).resolve().parent
-app = FastAPI(title="HIVI")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    # Side services are HIVI-owned processes; don't leave them running.
+    await asyncio.to_thread(aux_services.stop_all)
+
+
+app = FastAPI(title="HIVI", lifespan=_lifespan)
 _TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 _HAIE_EXPOSE = (
     "X-HIVI-HAIE-Path, X-HIVI-HAIE-Intents, X-HIVI-HAIE-Complexity, "
@@ -41,6 +60,10 @@ _HAIE_EXPOSE = (
 # and how long a switch waits for in-flight memory requests before proceeding.
 _MEMORY_WAIT_S = float(os.environ.get("HIVI_MEMORY_WAIT_S", "600"))
 _MEMORY_DRAIN_S = float(os.environ.get("HIVI_MEMORY_DRAIN_S", "120"))
+# Router-triggered switches: how long a request may wait for its model, and how
+# long a switch waits for other agents' in-flight generations to finish.
+_SWITCH_WAIT_S = float(os.environ.get("HIVI_SWITCH_WAIT_S", "900"))
+_SWITCH_DRAIN_S = float(os.environ.get("HIVI_SWITCH_DRAIN_S", "600"))
 
 
 class BackendGate:
@@ -125,8 +148,26 @@ def index():
 
 
 @app.get("/api/models")
-def api_models():
-    return {"models": models_as_dicts()}
+def api_models(kind: str = "chat"):
+    """Chat models by default; ?kind=embedding|reranker|all for the rest."""
+    return {"models": models_as_dicts(None if kind == "all" else kind)}
+
+
+@app.get("/api/roles")
+async def api_roles():
+    """What each agent role / alias in configs/model_roles.yaml resolves to."""
+    return await asyncio.to_thread(model_router.describe)
+
+
+@app.get("/api/aux")
+async def api_aux():
+    return aux_services.status_all()
+
+
+@app.post("/api/aux/stop")
+async def api_aux_stop():
+    await asyncio.to_thread(aux_services.stop_all)
+    return aux_services.status_all()
 
 
 @app.post("/api/route")
@@ -247,8 +288,10 @@ async def _proxy_buffered(
     path: str,
     body: bytes | None = None,
     extra_headers: dict[str, str] | None = None,
+    *,
+    base: str = BACKEND_BASE,
 ) -> Response:
-    url = f"{BACKEND_BASE}/{path}"
+    url = f"{base}/{path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
     if body is None:
@@ -275,8 +318,13 @@ async def _proxy_stream(
     path: str,
     body: bytes,
     extra_headers: dict[str, str] | None = None,
+    on_close: Callable[[], None] | None = None,
 ) -> StreamingResponse:
-    """Pass through SSE / chunked bodies without buffering the full reply."""
+    """Pass through SSE / chunked bodies without buffering the full reply.
+
+    ``on_close`` runs once when the stream ends (or fails to start), so the
+    caller can hold the backend gate for the whole generation.
+    """
     url = f"{BACKEND_BASE}/{path}"
     if request.url.query:
         url = f"{url}?{request.url.query}"
@@ -292,6 +340,8 @@ async def _proxy_stream(
         upstream = await client.send(req, stream=True)
     except httpx.RequestError as e:
         await client.aclose()
+        if on_close:
+            on_close()
         raise HTTPException(502, f"backend unreachable: {e}") from e
 
     media = upstream.headers.get("content-type", "text/event-stream")
@@ -304,6 +354,8 @@ async def _proxy_stream(
         finally:
             await upstream.aclose()
             await client.aclose()
+            if on_close:
+                on_close()
 
     out_headers = {
         "Cache-Control": "no-cache",
@@ -321,31 +373,158 @@ async def _proxy_stream(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Retrieval side services (must be registered before the /v1 catch-all)
+# --------------------------------------------------------------------------- #
+
+async def _aux_proxy(kind: str, request: Request, path: str) -> Response:
+    svc = aux_services.SERVICES[kind]
+    raw = await request.body()
+    try:
+        await asyncio.to_thread(svc.ensure)
+    except RuntimeError as e:
+        raise HTTPException(503, f"{kind} service unavailable: {e}") from e
+    svc.enter()
+    try:
+        return await _proxy_buffered(request, path, raw, base=svc.base)
+    finally:
+        svc.leave()
+
+
+@app.post("/v1/embeddings")
+async def embeddings_proxy(request: Request):
+    return await _aux_proxy(EMBEDDING, request, "v1/embeddings")
+
+
+@app.post("/v1/rerank")
+@app.post("/v1/reranking")
+@app.post("/rerank")
+async def rerank_proxy(request: Request):
+    return await _aux_proxy(RERANKER, request, "v1/rerank")
+
+
+# --------------------------------------------------------------------------- #
+# Chat model router
+# --------------------------------------------------------------------------- #
+
+def _is_loaded(model: ModelEntry) -> bool:
+    return STATE.model_id == model.id and STATE.status == "ready"
+
+
+async def _enter_with_model(target: ModelEntry | None) -> None:
+    """Hold the backend gate with ``target`` loaded (any model when None).
+
+    Swaps wait for in-flight requests to drain and are serialised by
+    SWITCH_LOCK, so one agent's switch never cuts off another agent's reply.
+    """
+    deadline = time.monotonic() + _SWITCH_WAIT_S
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(503, "timed out waiting for a model switch")
+        if target is None or _is_loaded(target):
+            if not await GATE.enter(remaining):
+                raise HTTPException(503, "backend switching; request timed out waiting")
+            if target is None or _is_loaded(target):
+                return
+            GATE.leave()  # another switch won the race; try again
+            continue
+        acquired = await asyncio.to_thread(SWITCH_LOCK.acquire, True, remaining)
+        if not acquired:
+            raise HTTPException(503, f"timed out waiting to load {target.name}")
+        try:
+            if _is_loaded(target):
+                continue  # someone else loaded it while we waited
+            GATE.close()
+            drained = await GATE.wait_idle(_SWITCH_DRAIN_S)
+            if not drained:
+                print(f"HIVI: switching with {GATE.inflight} request(s) still running")
+            state = await asyncio.to_thread(select_model, target)
+            ok, detail = state.status == "ready", state.detail
+        finally:
+            GATE.open()
+            SWITCH_LOCK.release()
+        if not ok:
+            raise HTTPException(502, f"could not load {target.name}: {detail}")
+
+
+def _requested_model(raw: bytes) -> str | None:
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+    model = body.get("model") if isinstance(body, dict) else None
+    return model if isinstance(model, str) else None
+
+
+def _with_backend_model(raw: bytes, current: str | None) -> bytes:
+    """Colibrì 404s on unknown model names, so send the loaded model's own id."""
+    if not current:
+        return raw
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return raw
+    if not isinstance(body, dict):
+        return raw
+    body["model"] = current
+    return json.dumps(body).encode("utf-8")
+
+
 @app.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 async def openai_proxy(path: str, request: Request):
-    if path.endswith("chat/completions") and request.method == "POST":
-        raw = await request.body()
-        # Internal / tooling can skip HAIE with this header (semantic classify already
-        # talks to BACKEND_BASE directly; this is for any HIVI-level callers).
-        skip = request.headers.get("x-hivi-haie-skip", "").strip() in ("1", "true", "yes")
-        if skip:
-            adapted, extra = raw, {}
-        else:
-            adapted, extra = await asyncio.to_thread(_adapt_chat_body, raw)
+    # Covers both /v1/chat/completions and /v1/completions.
+    is_generation = request.method == "POST" and path.endswith("completions")
+    if not is_generation:
+        return await _proxy_buffered(request, f"v1/{path}")
+
+    raw = await request.body()
+    resolved = await asyncio.to_thread(model_router.resolve, _requested_model(raw))
+    await _enter_with_model(resolved.model if resolved else None)
+    released = False
+    handed_off = False  # True once a streaming response owns the release
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            GATE.leave()
+
+    try:
+        if resolved is not None:
+            current = await asyncio.to_thread(_current_backend_model)
+            raw = _with_backend_model(raw, current)
+        extra: dict[str, str] = {}
+        adapted = raw
+        if path.endswith("chat/completions"):
+            # Internal / tooling can skip HAIE with this header (semantic classify already
+            # talks to BACKEND_BASE directly; this is for any HIVI-level callers).
+            skip = request.headers.get("x-hivi-haie-skip", "").strip() in ("1", "true", "yes")
+            if not skip:
+                adapted, extra = await asyncio.to_thread(_adapt_chat_body, raw)
+        if resolved is not None:
+            extra["X-HIVI-Model"] = resolved.model.id
+            extra["X-HIVI-Model-Via"] = resolved.via
 
         async def receive():
             return {"type": "http.request", "body": adapted, "more_body": False}
 
         request = Request(request.scope, receive)
-        wants_stream = False
         try:
             wants_stream = bool(json.loads(adapted.decode("utf-8")).get("stream"))
         except Exception:
             wants_stream = False
         if wants_stream:
-            return await _proxy_stream(request, f"v1/{path}", adapted, extra)
+            # The stream releases the gate when the last chunk is sent.
+            response = await _proxy_stream(
+                request, f"v1/{path}", adapted, extra, on_close=release
+            )
+            handed_off = True
+            return response
         return await _proxy_buffered(request, f"v1/{path}", adapted, extra)
-    return await _proxy_buffered(request, f"v1/{path}")
+    finally:
+        if not handed_off:
+            release()  # idempotent: safe if the stream already released on failure
 
 
 def _current_backend_model() -> str | None:

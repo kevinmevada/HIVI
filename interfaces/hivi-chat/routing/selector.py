@@ -32,7 +32,9 @@ def select_model(
     active_policy = policy or load_policy(paths.repo_root() / "configs" / "routing.yaml")
     eligible = [
         model for model in candidates
-        if active_policy.max_size_gb is None or model.size_gb <= active_policy.max_size_gb
+        # Embedding / reranker files are retrieval services, never chat answers.
+        if getattr(model, "kind", "chat") == "chat"
+        and (active_policy.max_size_gb is None or model.size_gb <= active_policy.max_size_gb)
     ]
     if not eligible:
         return RouteDecision(None, classification, 0, "no eligible models")

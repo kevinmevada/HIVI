@@ -1,30 +1,34 @@
 ﻿# Launch HIVI chat UI (model selector → Colibrì or llama.cpp)
 # Stops only what HIVI itself started: a previous HIVI control server and the
-# backend recorded in data\run\hivi_backend.json. Other llama-server / Colibrì
+# backend recorded in data\run\hivi_backend.json, plus the embedding / reranker
+# side services in data\run\hivi_aux_*.json. Other llama-server / Colibrì
 # processes (e.g. one you started for something else) are left alone.
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $py = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 
-Write-Host "Stopping a previous HIVI control server / HIVI-owned backend (if any)..."
+Write-Host "Stopping a previous HIVI control server / HIVI-owned backends (if any)..."
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
   $_.CommandLine -match 'interfaces\\hivi-chat\\server\.py'
 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
 $dataRoot = if ($env:HIVI_DATA_ROOT) { $env:HIVI_DATA_ROOT } else { Join-Path $root "data" }
-$pidFile = Join-Path $dataRoot "run\hivi_backend.json"
-if (Test-Path $pidFile) {
+$runDir = Join-Path $dataRoot "run"
+$pidFiles = @(Get-ChildItem $runDir -File -Filter "hivi_backend.json" -ErrorAction SilentlyContinue) +
+            @(Get-ChildItem $runDir -File -Filter "hivi_aux_*.json" -ErrorAction SilentlyContinue)
+foreach ($pidFile in $pidFiles) {
   try {
-    $rec = Get-Content $pidFile -Raw | ConvertFrom-Json
+    $rec = Get-Content $pidFile.FullName -Raw | ConvertFrom-Json
     $proc = if ($rec.pid) { Get-Process -Id $rec.pid -ErrorAction SilentlyContinue } else { $null }
     # Guard against PID reuse after a reboot: only stop it if it still looks like our backend.
     if ($proc -and $proc.ProcessName -match 'llama-server|python') {
       & taskkill /PID $rec.pid /T /F 2>$null | Out-Null
-      Write-Host "  stopped HIVI backend PID $($rec.pid) ($($rec.engine))"
+      $what = if ($rec.engine) { $rec.engine } else { $rec.kind }
+      Write-Host "  stopped HIVI process PID $($rec.pid) ($what)"
     }
   } catch {}
-  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+  Remove-Item $pidFile.FullName -Force -ErrorAction SilentlyContinue
 }
 Start-Sleep 2
 
