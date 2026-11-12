@@ -75,7 +75,27 @@ def test_projector_does_not_leak_across_folders(models_dir: Path):
     by_name = {Path(m.path).parent.name: m for m in registry.scan_models()}
     assert by_name["base"].vision_projector_path
     assert by_name["heretic"].vision_projector_path is None
-    assert by_name["heretic"].engine == "colibri"  # text-only qwen3 keeps Colibrì
+    assert by_name["heretic"].engine == "llama"  # uncensored builds run on llama.cpp
+
+
+def test_plain_qwen3_text_model_keeps_colibri(models_dir: Path):
+    _touch(models_dir / "General" / "plain" / "Qwen3.6-35B-A3B-Q5_K_M.gguf")
+    (m,) = registry.scan_models()
+    assert m.engine == "colibri"
+
+
+def test_uncensored_builds_route_to_llama(models_dir: Path):
+    names = [
+        "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf",
+        "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-Q6_K.gguf",
+        "Huihui-Qwen3.6-35B-A3B-abliterated-Q6_K.gguf",
+        "Qwen3.8-27B-Heretic-Q5_K_M.gguf",
+    ]
+    for i, name in enumerate(names):
+        _touch(models_dir / "Coding" / f"m{i}" / name)
+    entries = registry.scan_models()
+    assert len(entries) == len(names)
+    assert all(m.engine == "llama" for m in entries), [(m.path, m.engine) for m in entries]
 
 
 def test_gpt_oss_stays_on_llama(models_dir: Path):

@@ -86,6 +86,9 @@ def _params(name: str, rel: str) -> str:
     return "?"
 
 
+_UNCENSORED_MARKERS = ("uncensored", "abliterat", "heretic", "hauhau", "decensor")
+
+
 def _pick_engine(
     name: str, rel: str, *, has_projector: bool = False, kind: str = CHAT
 ) -> tuple[str, str]:
@@ -99,6 +102,13 @@ def _pick_engine(
     # Vision needs llama-server --mmproj; Colibrì has no GGUF projector path.
     if has_projector:
         return "llama", "vision projector found → llama.cpp with --mmproj"
+    # Uncensored builds (abliterated / heretic / HauhauCS) → llama.cpp.
+    # Their refusal removal is a tiny weight edit (KL ~0.001–0.01). The Heretic Q6_K
+    # still refused under Colibrì (experimental-fast + auto-tier), while the HauhauCS
+    # Q5_K_P answered fully under plain llama.cpp (2026-11-11). Keep them on the
+    # reference engine so the edit is reproduced exactly.
+    if any(k in n or k in r for k in _UNCENSORED_MARKERS):
+        return "llama", "uncensored build → llama.cpp (Colibrì tiering weakens abliteration)"
     # Explicit llama-only families (Colibrì unsupported)
     if "gpt-oss" in n or "gpt-oss" in r:
         return "llama", "architecture gpt-oss not supported by Colibrì"
