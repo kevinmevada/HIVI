@@ -7,6 +7,35 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $py = Join-Path $root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
+$uiUrl = "http://127.0.0.1:7860"
+
+function Open-HiviUi {
+  $chromePaths = @(
+    (Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "Google\Chrome\Application\chrome.exe"),
+    (Join-Path ([Environment]::GetFolderPath("ProgramFilesX86")) "Google\Chrome\Application\chrome.exe"),
+    (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
+  )
+  $chrome = $chromePaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  if (-not $chrome) { throw "Google Chrome was not found. Install Chrome to open HIVI's UI." }
+  Start-Process -FilePath $chrome -ArgumentList @("--new-window", $uiUrl)
+}
+
+# If HIVI is already listening, reuse it. The WMI process lookup below can be
+# unavailable in restricted shells; blindly starting a second server then
+# makes Uvicorn raise an address-in-use exception (often shown as a debugger
+# breakpoint dialog in IDEs).
+try {
+  $running = Invoke-RestMethod -Uri "$uiUrl/api/status" -TimeoutSec 2
+  if ($running.backend -and $null -ne $running.status) {
+    Write-Host "HIVI is already running → $uiUrl"
+    Open-HiviUi
+    return
+  }
+} catch {}
+
+if (Test-NetConnection -ComputerName "127.0.0.1" -Port 7860 -InformationLevel Quiet -WarningAction SilentlyContinue) {
+  Write-Error "Port 7860 is already in use by another service. Stop it or configure HIVI to use another port."
+}
 
 Write-Host "Stopping a previous HIVI control server / HIVI-owned backends (if any)..."
 Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
@@ -33,6 +62,6 @@ foreach ($pidFile in $pidFiles) {
 Start-Sleep 2
 
 Set-Location (Join-Path $root "interfaces\hivi-chat")
-Write-Host "HIVI UI → http://127.0.0.1:7860"
-Start-Process "http://127.0.0.1:7860"
+Write-Host "HIVI UI → $uiUrl"
+Open-HiviUi
 & $py server.py --host 127.0.0.1 --port 7860
