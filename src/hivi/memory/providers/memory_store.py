@@ -17,7 +17,6 @@ from hivi.memory.models import (
     RetainRequest,
     RetainResult,
 )
-from hivi.memory.scopes import bank_id_for_project
 
 
 class InMemoryProvider:

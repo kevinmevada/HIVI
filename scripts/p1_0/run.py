@@ -31,7 +31,6 @@ from p1_0.discovery import (  # noqa: E402
     find_weight_packages,
     guess_quant_from_name,
     human_bytes,
-    iter_files,
     match_expected,
 )
 from p1_0.expected import OLLAMA_EXPECTED, PC_EXPECTED, USB_EXPECTED  # noqa: E402

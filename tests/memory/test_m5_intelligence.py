@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hivi.memory.context_builder import ContextBudget, build_context, dedupe_memories
+from hivi.memory.context_builder import ContextBudget, dedupe_memories
 from hivi.memory.event_selector import EventKind, RetainPriority, select_event, should_retain
 from hivi.memory.manager import MemoryManager
-from hivi.memory.models import MemoryStatus, RecalledMemory, RecallResult
+from hivi.memory.models import RecalledMemory
 from hivi.memory.providers.memory_store import InMemoryProvider
 
 

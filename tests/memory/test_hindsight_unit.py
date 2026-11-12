@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from hivi.memory.manager import MemoryManager
 from hivi.memory.models import (
@@ -12,8 +11,6 @@ from hivi.memory.models import (
     MemoryScope,
     MemoryStatus,
     MemoryType,
-    RecallRequest,
-    ReflectRequest,
     RetainItem,
     RetainRequest,
 )

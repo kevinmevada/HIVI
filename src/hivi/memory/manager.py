@@ -18,7 +18,6 @@ from .models import (
     HealthStatus,
     MemoryScope,
     MemoryStatus,
-    MemoryType,
     RecallRequest,
     RecallResult,
     ReflectRequest,
@@ -27,7 +26,7 @@ from .models import (
     RetainRequest,
     RetainResult,
 )
-from .policies import ActorRole, PolicyDenied, assert_can_retain, assert_project_access
+from .policies import ActorRole, assert_can_retain, assert_project_access
 from .provenance import Provenance, ProvenanceIndex
 from .providers.hindsight import HindsightProvider
 from .retention_queue import RetentionQueue

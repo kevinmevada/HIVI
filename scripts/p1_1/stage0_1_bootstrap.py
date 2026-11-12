@@ -249,7 +249,6 @@ def environment_audit() -> dict:
         "onnx_ready": sw["packages"]["onnxruntime"] != "UNAVAILABLE",
     }
     # try read llama.cpp git commit if .git exists — usually zip has no .git
-    commit_file = llama_src / "COMMIT"
     if (llama_src / ".git").exists():
         c, o = run(["git", "-C", str(llama_src), "rev-parse", "HEAD"])
         runtime["llama_cpp"]["git_commit"] = o if c == 0 else None
