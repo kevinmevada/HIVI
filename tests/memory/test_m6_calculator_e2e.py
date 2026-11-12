@@ -11,10 +11,6 @@ from hivi.memory.providers.memory_store import InMemoryProvider
 from hivi.orchestrator.graphs import build_memory_agent_graph, run_turn
 
 
-def _fresh(tmp_path: Path, name: str = "calc.sqlite") -> MemoryManager:
-    return MemoryManager(provider=InMemoryProvider(), db_path=tmp_path / name)
-
-
 def test_calculator_project_memory_lifecycle(tmp_path: Path):
     """
     Acceptance:

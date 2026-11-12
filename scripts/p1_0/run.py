@@ -954,14 +954,6 @@ def write_reports(env: dict, records: list[dict], tools: dict, legacy: dict) -> 
     total_bytes = sum((r.get("total_weight_size") or {}).get("bytes") or 0 for r in present)
     weight_files = sum(r.get("weight_shard_count") or 0 for r in present)
 
-    def count_status(key, val_substr):
-        n = 0
-        for r in records:
-            st = str((r.get(key) or {}).get("status", ""))
-            if val_substr in st:
-                n += 1
-        return n
-
     cert_rows = [
         [
             r.get("model_id"),

@@ -248,11 +248,6 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
     return out
 
 
-def chat_models(root: Path | None = None) -> list[ModelEntry]:
-    """Models that can be loaded on the main chat backend."""
-    return [m for m in scan_models(root) if m.kind == CHAT]
-
-
 def models_as_dicts(kind: str | None = CHAT) -> list[dict]:
     """Light → heavy (file size), then name for ties. ``kind=None`` returns everything."""
     models = [m for m in scan_models() if kind is None or m.kind == kind]

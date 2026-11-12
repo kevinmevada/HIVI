@@ -1,8 +1,6 @@
 """Link memories to original evidence (ledger event / filesystem artifact)."""
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 
@@ -42,14 +40,3 @@ class ProvenanceIndex(BaseModel):
     def get(self, memory_key: str) -> Provenance | None:
         return self.records.get(memory_key)
 
-    def from_metadata(self, memory_key: str, metadata: dict[str, Any]) -> Provenance:
-        p = Provenance(
-            event_id=metadata.get("event_id"),
-            evidence_path=metadata.get("evidence_path"),
-            source=metadata.get("source"),
-            actor_role=metadata.get("actor_role"),
-            agent_id=metadata.get("agent_id"),
-            notes=metadata.get("provenance_notes"),
-        )
-        self.register(memory_key, p)
-        return p

@@ -4,8 +4,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-
 from hivi.storage.sqlite_db import connect
 
 from .models import MemoryStatus, RecalledMemory
@@ -131,13 +129,3 @@ def _stable_key(m: RecalledMemory) -> str:
     return f"text:{hash(m.text) & 0xFFFFFFFF:08x}"
 
 
-def correction_to_dict(c: CorrectionRecord) -> dict[str, Any]:
-    return {
-        "id": c.id,
-        "project_id": c.project_id,
-        "target_memory_key": c.target_memory_key,
-        "action": c.action,
-        "actor_role": c.actor_role,
-        "reason": c.reason,
-        "new_content": c.new_content,
-    }
