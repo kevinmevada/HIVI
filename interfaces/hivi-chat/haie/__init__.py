@@ -102,16 +102,19 @@ def _recent_context(body: dict[str, Any], limit: int = 4) -> str:
     messages = body.get("messages") or []
     if not isinstance(messages, list):
         return ""
+    turns = [
+        msg
+        for msg in messages
+        if isinstance(msg, dict) and msg.get("role") in ("user", "assistant")
+    ]
+    if turns and turns[-1].get("role") == "user":
+        turns = turns[:-1]
     bits: list[str] = []
-    for msg in messages[-limit:]:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role not in ("user", "assistant"):
-            continue
+    for msg in turns[-limit:]:
         content = msg.get("content")
-        if isinstance(content, str):
-            bits.append(f"{role}: {content[:200]}")
+        if isinstance(content, str) and content.strip():
+            text = " ".join(content.split())[:200]
+            bits.append(f"previous {msg['role']}: {text}")
     return "\n".join(bits)
 
 

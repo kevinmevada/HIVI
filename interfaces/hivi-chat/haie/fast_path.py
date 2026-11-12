@@ -76,8 +76,15 @@ _TASKISH = re.compile(
     r"write|fix|code|explain|design|build|implement|debug|compare|"
     r"create|add|parse|refactor|optimize|architect|propose|survey|"
     r"derive|prove|migrate|generate|tune|profile|implement|"
-    r"why|how|what\s+is|what\s+are|research|summarize"
+    r"why|how|what\s+is|what\s+are|research|summarize|"
+    r"make|change|convert|rewrite|translate|port|update|remove|rename|replace|"
+    r"redo|continue|shorten|expand|simplify|improve|extend|test|document"
     r")\b",
+    re.I,
+)
+# A short message that points back at earlier turns depends on context.
+_REFERS_BACK = re.compile(
+    r"\b(it|this|that|these|those|them|same|again|instead|above|previous)\b",
     re.I,
 )
 _FENCE = re.compile(r"```")
@@ -188,7 +195,9 @@ def try_fast_path(user_text: str, history_len: int = 0) -> Understanding | None:
     # Short plain chat with no task verbs → fast chat
     # P1 finding: previous verb list was too narrow ("Create…", "Add…", "Why…")
     # silently took the chat fast-path and starved coding/explanation profiles.
-    if n < 60 and not _TASKISH.search(text):
+    if n < 60 and not _TASKISH.search(text) and not (
+        history_len >= 2 and _REFERS_BACK.search(text)
+    ):
         return Understanding(
             intents=["chat"],
             complexity=1,

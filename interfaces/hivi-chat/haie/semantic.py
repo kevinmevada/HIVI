@@ -24,6 +24,8 @@ CLASSIFIER_SYSTEM = (
 _TIMEOUT = httpx.Timeout(6.0, connect=2.0)
 _CLASSIFY_MAX_TOKENS = 96
 _CLASSIFY_DEADLINE_S = 5.5
+_FOLLOWUP_CHARS = 160
+_CONTEXT_CHARS = 300
 _VALID_INTENTS = {
     "coding",
     "explanation",
@@ -280,8 +282,14 @@ def classify_semantic(
     Returns ClassifyResult with prompt_ms / predicted_ms when llama timings exist.
     """
     user = user_text.strip()
-    # Never send long history into classify — prefill dominates on MoE
+    # Never send long history into classify — prefill dominates on MoE. A short
+    # follow-up gets only the previous exchange.
     prompt = user[:500]
+    if recent_context and len(user) < _FOLLOWUP_CHARS:
+        prompt = (
+            f"Context (do not classify):\n{recent_context[:_CONTEXT_CHARS]}\n\n"
+            f"Request to classify:\n{prompt}"
+        )
     url = f"{backend_base.rstrip('/')}/v1/chat/completions"
     t_deadline = time.perf_counter() + _CLASSIFY_DEADLINE_S
     try:

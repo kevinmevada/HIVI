@@ -172,3 +172,42 @@ def test_acknowledgements_get_a_short_budget_even_in_long_chats():
     assert meta.path == "fast" and meta.deliverable == "acknowledgement"
     assert out["max_tokens"] <= 256
     assert out["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_short_followups_get_previous_exchange_as_classifier_context(monkeypatch):
+    """ "make it async" can't be classified without knowing what "it" is."""
+    import haie.semantic as semantic
+
+    seen: list[str] = []
+
+    def fake_call(*, client, url, model, prompt, system, max_tokens, prefill):
+        seen.append(prompt)
+        return None
+
+    monkeypatch.setattr(semantic, "_one_classify_call", fake_call)
+    history = [
+        {"role": "user", "content": "write a python scraper for job postings\nwith retries"},
+        {"role": "assistant", "content": "Here is the script:\n```python\nimport httpx\n```"},
+    ]
+    body = {"model": "m", "messages": history + [{"role": "user", "content": "make it async"}]}
+    plan_request(body, engine="llama", backend_base="http://127.0.0.1:9", model_id=None)
+    assert seen, "follow-up should reach the semantic classifier"
+    prompt = seen[0]
+    assert "previous user: write a python scraper for job postings with retries" in prompt
+    assert "previous assistant: Here is the script:" in prompt
+    assert prompt.endswith("Request to classify:\nmake it async")
+    assert "make it async" not in prompt.split("Request to classify:")[0]  # not duplicated
+    assert len(prompt) < 400
+
+    # long requests stand alone: no history in the classifier prompt
+    seen.clear()
+    long_req = "Design a job-scraping pipeline " + "with queues, retries and storage " * 6
+    semantic.classify_semantic(backend_base="http://127.0.0.1:9", model="m", user_text=long_req,
+                               recent_context="previous user: x")
+    assert seen and seen[0] == long_req.strip()[:500]
+
+    # short chit-chat still takes the fast path; short follow-ups don't
+    from haie.fast_path import try_fast_path
+    assert try_fast_path("tell me a joke", history_len=3).intents == ["chat"]
+    for t in ("make it async", "now do it in rust", "same for the other one"):
+        assert try_fast_path(t, history_len=3) is None, t
