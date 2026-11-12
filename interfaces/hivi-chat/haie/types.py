@@ -66,6 +66,7 @@ class SampleParams:
     max_tokens: int
     thinking_budget_tokens: int
     reasoning_effort: str  # low|medium|high|none
+    enable_thinking: bool | None = None  # None = leave the model/server default
 
 
 @dataclass
@@ -96,6 +97,9 @@ class PlanMeta:
             "X-HIVI-HAIE-Temp": str(self.params.get("temperature", "")),
             "X-HIVI-HAIE-Max-Tokens": str(self.params.get("max_tokens", "")),
             "X-HIVI-HAIE-Think": str(self.params.get("thinking_budget_tokens", "")),
+            "X-HIVI-HAIE-Thinking": {True: "on", False: "off"}.get(
+                self.params.get("enable_thinking"), ""
+            ),
             # Compat aliases for older UI snippets
             "X-HIVI-Adaptive-Bucket": ",".join(self.intents) or self.path,
             "X-HIVI-Adaptive-Temp": str(self.params.get("temperature", "")),

@@ -6,6 +6,7 @@ llama-server side services (see aux_services.py) and never take the chat slot.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class ModelEntry:
     engine_reason: str
     colibri_path: str | None = None
     vision_projector_path: str | None = None
+    uncensored: bool = False
     kind: str = CHAT  # "chat" | "embedding" | "reranker" | "fim"
 
 
@@ -89,6 +91,11 @@ def _params(name: str, rel: str) -> str:
 _UNCENSORED_MARKERS = ("uncensored", "abliterat", "heretic", "hauhau", "decensor")
 
 
+def is_uncensored(*texts: str | None) -> bool:
+    """True when any name/path/id marks an uncensored (abliterated/heretic/HauhauCS) build."""
+    return any(k in (t or "").lower() for t in texts for k in _UNCENSORED_MARKERS)
+
+
 def _pick_engine(
     name: str, rel: str, *, has_projector: bool = False, kind: str = CHAT
 ) -> tuple[str, str]:
@@ -102,13 +109,11 @@ def _pick_engine(
     # Vision needs llama-server --mmproj; Colibrì has no GGUF projector path.
     if has_projector:
         return "llama", "vision projector found → llama.cpp with --mmproj"
-    # Uncensored builds (abliterated / heretic / HauhauCS) → llama.cpp.
-    # Their refusal removal is a tiny weight edit (KL ~0.001–0.01). The Heretic Q6_K
-    # still refused under Colibrì (experimental-fast + auto-tier), while the HauhauCS
-    # Q5_K_P answered fully under plain llama.cpp (2026-11-11). Keep them on the
-    # reference engine so the edit is reproduced exactly.
-    if any(k in n or k in r for k in _UNCENSORED_MARKERS):
-        return "llama", "uncensored build → llama.cpp (Colibrì tiering weakens abliteration)"
+    # Uncensored builds follow their family like any other model. Colibrì imports
+    # with --mode link (reads the GGUF's own blocks) and exact top-K routing, so the
+    # abliteration edit is kept. The 2026-11-11 "refuses under Colibrì" result
+    # compared two different models (Heretic 10/100 refusals vs HauhauCS 0/465)
+    # under HIVI's old low-temp / thinking-off settings, not the engine.
     # Explicit llama-only families (Colibrì unsupported)
     if "gpt-oss" in n or "gpt-oss" in r:
         return "llama", "architecture gpt-oss not supported by Colibrì"
@@ -118,12 +123,50 @@ def _pick_engine(
         return "llama", "DeepSeek-Coder-V2 MoE → llama.cpp"
     if "qwen3-coder" in n or "qwen3-coder" in r or "30b-a3b" in n or "30b-a3b" in r:
         return "llama", "Qwen3-Coder MoE → llama.cpp (--cpu-moe)"
-    # Colibrì-friendly (qwen3 / qwen35 / ornith)
-    if any(k in n or k in r for k in ("qwen3.8", "qwen3.5", "ornith", "qwen3-")):
-        return "colibri", "qwen3/qwen35 family supported by Colibrì"
+    # Colibrì-friendly (qwen3 / qwen35 / ornith). Its expert/trunk tiering is built
+    # for models larger than VRAM: 27B Q5 on the RTX 5060 8 GB ran ~3x faster than
+    # llama.cpp (benchmarks/27b_comparison/PHASE1_SMOKE_STATUS.md).
+    if any(k in n or k in r for k in ("qwen3.8", "qwen3.6", "qwen3.5", "ornith", "qwen3-")):
+        return "colibri", "qwen3.5/3.6/3.8 family → Colibrì (tiered GPU/RAM, faster on 8 GB)"
     if "qwen3" in n or "qwen3" in r:
-        return "colibri", "qwen3 family supported by Colibrì"
+        return "colibri", "qwen3 family → Colibrì"
     return "llama", "default to llama.cpp"
+
+
+# --------------------------------------------------------------------------- #
+# Per-model engine pins (data/run/hivi_engines.json), set from /api/engine
+# --------------------------------------------------------------------------- #
+
+ENGINES = ("llama", "colibri")
+
+
+def _pins_file() -> Path:
+    return paths.data_root() / "run" / "hivi_engines.json"
+
+
+def engine_pins() -> dict[str, str]:
+    try:
+        raw = json.loads(_pins_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if v in ENGINES}
+
+
+def set_engine_pin(model_id: str, engine: str | None) -> dict[str, str]:
+    """Pin a model to an engine; ``None`` / "auto" removes the pin."""
+    pins = engine_pins()
+    if engine in (None, "", "auto"):
+        pins.pop(model_id, None)
+    elif engine in ENGINES:
+        pins[model_id] = engine
+    else:
+        raise ValueError(f"engine must be one of {ENGINES} or 'auto'")
+    f = _pins_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(pins, indent=2, sort_keys=True), encoding="utf-8")
+    return pins
 
 
 def _display_name(stem: str, rel: str) -> str:
@@ -167,6 +210,7 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
     models_dir = Path(root) if root is not None else models_root()
     if not models_dir.exists():
         return out
+    pins = engine_pins()
     for gguf in sorted(models_dir.rglob("*.gguf")):
         rel = str(gguf.relative_to(models_dir))
         stem = gguf.stem
@@ -177,6 +221,9 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
         # Retrieval models never take a vision projector.
         projector = _find_projector(gguf) if kind == CHAT else None
         engine, reason = _pick_engine(stem, rel, has_projector=projector is not None, kind=kind)
+        pin = pins.get(mid) if kind == CHAT else None
+        if pin and pin != engine:
+            engine, reason = pin, f"pinned to {pin} (auto would pick {engine}: {reason})"
         colibri = gguf.with_suffix(".colibri")
         # also accept NAME.colibri next to file with same stem
         if not colibri.exists():
@@ -193,6 +240,7 @@ def scan_models(root: Path | None = None) -> list[ModelEntry]:
                 engine=engine,
                 engine_reason=reason,
                 colibri_path=str(colibri) if colibri.exists() else None,
+                uncensored=kind == CHAT and is_uncensored(stem, rel),
                 vision_projector_path=str(projector) if projector else None,
                 kind=kind,
             )

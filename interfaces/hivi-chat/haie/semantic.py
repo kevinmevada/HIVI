@@ -230,6 +230,9 @@ def _one_classify_call(
         "stream": False,
         "reasoning_effort": "none",
         "reasoning_format": "none",
+        # Uncensored models now run with thinking on; the classifier must not.
+        "chat_template_kwargs": {"enable_thinking": False},
+        "enable_thinking": False,  # Colibrì reads this one, not chat_template_kwargs
     }
     t0 = time.perf_counter()
     r = client.post(url, json=payload)

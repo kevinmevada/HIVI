@@ -25,11 +25,20 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from haie import plan_request
 from hivi_paths import paths
-from registry import EMBEDDING, RERANKER, ModelEntry, get_model, models_as_dicts
+from registry import (
+    EMBEDDING,
+    RERANKER,
+    ModelEntry,
+    get_model,
+    is_uncensored,
+    models_as_dicts,
+    set_engine_pin,
+)
 from runtime import (
     BACKEND_BASE,
     STATE,
     SWITCH_LOCK,
+    backend_model_name,
     select_model,
     status_dict,
     stop_runtime,
@@ -122,6 +131,19 @@ class BackendGate:
 GATE = BackendGate()
 
 
+def _current_is_uncensored() -> bool:
+    """Loaded model is an uncensored build (abliterated / heretic / HauhauCS)."""
+    if not STATE.model_id:
+        return False
+    try:
+        entry = get_model(STATE.model_id)
+    except Exception:
+        entry = None
+    if entry is not None:
+        return bool(entry.uncensored)
+    return is_uncensored(STATE.model_id)
+
+
 def _adapt_chat_body(raw: bytes) -> tuple[bytes, dict[str, str]]:
     # Blocking (may call the backend for semantic classify) — run via to_thread.
     """HAIE: fast-path or semantic classify, then inject dynamic sampling params."""
@@ -137,6 +159,7 @@ def _adapt_chat_body(raw: bytes) -> tuple[bytes, dict[str, str]]:
         engine=STATE.engine,
         backend_base=BACKEND_BASE,
         model_id=STATE.model_id,
+        uncensored=_current_is_uncensored(),
     )
     extra = meta.to_headers()
     return json.dumps(adapted).encode("utf-8"), extra
@@ -259,6 +282,26 @@ async def api_select(request: Request):
         SWITCH_LOCK.release()
     code = 200 if state.status == "ready" else 500
     return JSONResponse(status_dict(), status_code=code)
+
+
+@app.post("/api/engine")
+async def api_engine(request: Request):
+    """Pin a model to llama.cpp or Colibrì ({"id": ..., "engine": "llama"|"colibri"|"auto"}).
+
+    Takes effect on the next load of that model.
+    """
+    body = await request.json()
+    mid, engine = body.get("id"), body.get("engine")
+    if not mid:
+        raise HTTPException(400, "id required")
+    if not await asyncio.to_thread(get_model, mid):
+        raise HTTPException(404, f"unknown model id: {mid}")
+    try:
+        pins = await asyncio.to_thread(set_engine_pin, mid, engine)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    model = await asyncio.to_thread(get_model, mid)
+    return {"id": mid, "engine": model.engine, "reason": model.engine_reason, "pins": pins}
 
 
 @app.post("/api/stop")
@@ -476,6 +519,8 @@ async def openai_proxy(path: str, request: Request):
     # Covers both /v1/chat/completions and /v1/completions.
     is_generation = request.method == "POST" and path.endswith("completions")
     if not is_generation:
+        if request.method == "GET" and path.rstrip("/") == "models" and backend_model_name():
+            return await _active_models_only(request)
         return await _proxy_buffered(request, f"v1/{path}")
 
     raw = await request.body()
@@ -491,7 +536,8 @@ async def openai_proxy(path: str, request: Request):
             GATE.leave()
 
     try:
-        if resolved is not None:
+        if resolved is not None or backend_model_name():
+            # Router mode needs a real preset name even for "local" / unknown names.
             current = await asyncio.to_thread(_current_backend_model)
             raw = _with_backend_model(raw, current)
         extra: dict[str, str] = {}
@@ -527,8 +573,28 @@ async def openai_proxy(path: str, request: Request):
             release()  # idempotent: safe if the stream already released on failure
 
 
+async def _active_models_only(request: Request) -> Response:
+    """Router mode lists every preset in /v1/models; clients that take data[0]
+    (the chat UI, many OpenAI tools) must see only the model that is active."""
+    resp = await _proxy_buffered(request, "v1/models")
+    active = backend_model_name()
+    try:
+        body = json.loads(resp.body)
+        rows = [r for r in body.get("data") or [] if isinstance(r, dict) and r.get("id") == active]
+        body["data"] = rows or [{"id": active, "object": "model", "owned_by": "hivi"}]
+        if isinstance(body.get("models"), list):
+            body["models"] = [m for m in body["models"]
+                              if isinstance(m, dict) and active in (m.get("name"), m.get("model"))]
+    except Exception:
+        return resp
+    return JSONResponse(body, status_code=resp.status_code)
+
+
 def _current_backend_model() -> str | None:
     """The id the running backend advertises (model names change on every switch)."""
+    routed = backend_model_name()  # router mode: /v1/models lists every preset
+    if routed:
+        return routed
     try:
         with httpx.Client(timeout=3.0) as client:
             r = client.get(f"{BACKEND_BASE}/v1/models")
@@ -581,7 +647,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=7860)
     args = ap.parse_args()
     print(f"HIVI UI  http://{args.host}:{args.port}")
-    print("API      /api/models  /api/select  /api/status")
+    print("API      /api/models  /api/select  /api/status  /api/engine")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 

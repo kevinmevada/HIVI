@@ -8,7 +8,7 @@ from .adapters import apply_params_to_body
 from .eval_store import log_plan
 from .fast_path import extract_last_user, try_fast_path
 from .heuristic import try_heuristic_path
-from .policy import derive_params
+from .policy import adapt_for_uncensored, adapt_thinking, derive_params
 from .semantic import classify_semantic
 from .types import PlanMeta, Understanding
 
@@ -121,6 +121,7 @@ def plan_request(
     engine: str | None,
     backend_base: str,
     model_id: str | None = None,
+    uncensored: bool = False,
 ) -> tuple[dict[str, Any], PlanMeta]:
     """Understand the turn and inject dynamic sampling params (client values win)."""
     user = extract_last_user(body)
@@ -160,6 +161,10 @@ def plan_request(
     understanding = _enrich_from_text(understanding, user)
 
     params = derive_params(understanding)
+    if uncensored:
+        params = adapt_for_uncensored(params, understanding)
+    if (engine or "").lower() == "colibri":
+        params = adapt_thinking(params, understanding)
     adapted = apply_params_to_body(body, params, engine)
     meta = PlanMeta(
         path=understanding.path,
@@ -177,6 +182,7 @@ def plan_request(
             "max_tokens": params.max_tokens,
             "thinking_budget_tokens": params.thinking_budget_tokens,
             "reasoning_effort": params.reasoning_effort,
+            "enable_thinking": params.enable_thinking,
         },
         engine=engine,
         classify_ms=classify_ms,

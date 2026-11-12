@@ -22,6 +22,42 @@ _SIMPLE_CODE_ALT = re.compile(
     re.I,
 )
 
+# Pure acknowledgements ("thank you", "perfect", "works, thanks bro", "badhiya"):
+# the whole message is made of these words. Anything else ("great, now add
+# logging") is a real request and goes through the normal path.
+_ACK_CORE = frozenset("""
+thanks thank thankyou thanku thnx thx ty tysm tyvm cheers appreciate appreciated
+perfect great nice awesome amazing cool excellent fantastic brilliant superb sweet
+good gg noted understood gotcha got works worked working
+solved fixed love lovely wow neat perfectly nicely flawlessly
+shukriya dhanyavad dhanyawad badhiya badiya mast sahi
+""".split())
+# "yes" / "ok" alone often answer "want me to…?" and mean "go ahead": only
+# filler here, so "ok thanks" is an acknowledgement but "ok" alone is not.
+_ACK_FILLER = frozenset("""
+ok okay okk k kk alright yes yep yeah yup done accha acha achha theek thik
+you u so much very a lot lots again man bro bruh dude buddy boss sir mate it its it's
+that that's thats this is was now all fine job work answer one really totally
+haha hehe lol bhai yaar hai h ho gaya gya ji the
+""".split())
+
+
+_QUESTION_START = frozenset(
+    "is are was were does do did can could should will would what why how which who when where".split()
+)
+
+
+def is_acknowledgement(text: str) -> bool:
+    words = re.findall(r"[a-z']+", (text or "").lower())
+    if not words or len(words) > 8 or len(text) > 80 or "?" in text:
+        return False
+    if words[0] in _QUESTION_START:
+        return False
+    return all(w in _ACK_CORE or w in _ACK_FILLER for w in words) and any(
+        w in _ACK_CORE for w in words
+    )
+
+
 # Anything matching these must go to semantic (even if also matches a code verb)
 _FORCE_SEMANTIC = re.compile(
     r"\b("
@@ -83,6 +119,21 @@ def try_fast_path(user_text: str, history_len: int = 0) -> Understanding | None:
         ).normalized()
 
     n = len(text)
+
+    if is_acknowledgement(text):
+        # Short reply only. With a large budget, models re-send their previous
+        # answer in full after "thank you" / "perfect".
+        return Understanding(
+            intents=["greeting"],
+            complexity=1,
+            deliverable="acknowledgement",
+            reasoning="none",
+            length="short",
+            ambiguity=0.05,
+            confidence=0.95,
+            path="fast",
+            expected_output_tokens=64,
+        ).normalized()
 
     # Hard force-semantic gates (do this BEFORE keyword fast matches)
     if _FORCE_SEMANTIC.search(text):

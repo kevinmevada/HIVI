@@ -1,6 +1,8 @@
 """Map understanding → continuous sampling params (V1.2 deliverable-aware budgets)."""
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .types import SampleParams, Understanding
 
 MAX_TOKENS_CEILING = 8192
@@ -141,4 +143,70 @@ def derive_params(u: Understanding) -> SampleParams:
         max_tokens=max_tokens,
         thinking_budget_tokens=int(think),
         reasoning_effort=effort,
+    )
+
+
+# Uncensored builds: keep HAIE's per-request adaptation, but re-centre it on the
+# band their refusal removal was measured in. HAIE still decides per turn (coding
+# coolest, brainstorm warmest, budgets by complexity/length); this only maps that
+# decision into the model's working range instead of HAIE's 0.05-0.35 coding band,
+# which pushed these builds back into residual refusals. Explicit client values
+# still win (apply_params_to_body only fills unset fields).
+UNCENSORED_MAX_TOKENS_CEILING = 12288  # thinking + answer; llama ctx is 16K for these
+
+# Thinking headroom on top of HAIE's answer budget, by the effort HAIE chose.
+_THINK_HEADROOM = {"none": 1024, "low": 1536, "medium": 3072, "high": 6144}
+
+
+def _uncensored_temperature(t: float) -> float:
+    """Linear map of HAIE's [0.05, 0.95] onto [~0.58, 1.0], order preserved.
+
+    coding 0.15 -> 0.63 · architecture 0.32 -> 0.71 · chat 0.5 -> 0.8 ·
+    brainstorm 0.8 -> 0.95. Matches Qwen's own guidance (~0.6 precise coding
+    with thinking, ~0.7 general) without fixing a single value.
+    """
+    return round(max(0.55, min(1.0, 0.55 + 0.5 * t)), 3)
+
+
+def adapt_for_uncensored(p: SampleParams, u: Understanding) -> SampleParams:
+    u = u.normalized()
+    # Adaptive thinking (like Claude's): reason only when HAIE judged the turn
+    # genuinely hard (high effort or complexity >= 4). Everything else answers directly for speed. If such a
+    # direct answer comes back as a refusal, the chat UI retries once with
+    # thinking on (see index.html: looksLikeRefusal).
+    think = wants_thinking(p, u)
+    headroom = _THINK_HEADROOM.get(p.reasoning_effort, 1536) if think else 0
+    return SampleParams(
+        temperature=_uncensored_temperature(p.temperature),
+        top_p=round(max(p.top_p, 0.9), 3),
+        top_k=max(p.top_k, 20),
+        max_tokens=min(UNCENSORED_MAX_TOKENS_CEILING, p.max_tokens + headroom),
+        thinking_budget_tokens=0,  # never cut thinking short; max_tokens bounds it
+        reasoning_effort=p.reasoning_effort,
+        enable_thinking=think,
+    )
+
+
+def wants_thinking(p: SampleParams, u: Understanding) -> bool:
+    """Reason only on turns HAIE judged genuinely hard (high effort or complexity >= 4)."""
+    return p.reasoning_effort == "high" or u.normalized().complexity >= 4
+
+
+COLIBRI_MAX_TOKENS_CEILING = 6144  # coli serve runs these at --ctx 8192
+
+
+def adapt_thinking(p: SampleParams, u: Understanding) -> SampleParams:
+    """Engines without a server-side reasoning switch (Colibrì) need a per-turn call.
+
+    Without it Colibrì falls back to the template's default: off for Qwen3.5/3.6,
+    xhigh on every message for Qwen3.8.
+    """
+    if p.enable_thinking is not None:
+        return p
+    think = wants_thinking(p, u)
+    headroom = _THINK_HEADROOM.get(p.reasoning_effort, 1536) if think else 0
+    return replace(
+        p,
+        enable_thinking=think,
+        max_tokens=min(COLIBRI_MAX_TOKENS_CEILING, p.max_tokens + headroom),
     )

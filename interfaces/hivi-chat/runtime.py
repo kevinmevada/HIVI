@@ -14,8 +14,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from hivi_paths import paths
@@ -33,6 +34,12 @@ SWITCH_LOCK = threading.Lock()
 
 
 def _cpu_threads() -> int:
+    # HIVI_THREADS wins. On hybrid Intel CPUs (P + E cores) llama.cpp is usually
+    # fastest with threads = number of P-cores; E-cores stall the sync points of
+    # MoE expert eval on CPU. Measure with scripts/bench_threads.ps1.
+    env = os.environ.get("HIVI_THREADS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
     n = os.cpu_count() or 8
     # Leave a couple cores for UI / OS; MoE expert eval is CPU-heavy.
     return max(4, min(16, n - 2))
@@ -61,9 +68,14 @@ class RuntimeState:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     log_path: str | None = None
     vision: bool = False
+    router: bool = False  # llama-server router mode: models load inside one process
+    backend_model: str | None = None  # name to send as "model" (router section id)
+    resident: list[str] = field(default_factory=list)  # router models, least recent first
 
 
 STATE = RuntimeState()
+# Models Colibrì could not import/start this session: they go straight to llama.cpp.
+_COLIBRI_FAILED: dict[str, str] = {}
 
 
 # --------------------------------------------------------------------------- #
@@ -217,6 +229,9 @@ def release_backend() -> None:
             pass
     STATE.proc = None
     STATE.pid = None
+    STATE.router = False
+    STATE.backend_model = None
+    STATE.resident = []
     _clear_pidfile()
     # Give the OS a moment to release the port and the GPU memory.
     deadline = time.time() + 15
@@ -286,9 +301,14 @@ def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[st
         "-ctv", "q8_0",
         "--jinja",
         "-fa", "on",
-        "--repeat-penalty", "1.1",
-        "--frequency-penalty", "0.2",
     ]
+    # Uncensored builds run with the model's own defaults: no extra penalties,
+    # no forced reasoning-off. Their refusal removal is measured under the stock
+    # template, and these overrides pushed them back into refusing (2026-11-11).
+    if model.uncensored:
+        _set_ctx(args, 16384)  # thinking on: room for reasoning + the answer
+    else:
+        args += ["--repeat-penalty", "1.1", "--frequency-penalty", "0.2"]
     if model.vision_projector_path:
         args += ["--mmproj", model.vision_projector_path]
     path_l = model.path.lower()
@@ -301,21 +321,32 @@ def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[st
             "--reasoning", "on",
             "--reasoning-format", "none",
             "--reasoning-effort", "low",
-            "--reasoning-budget", "64",
         ]
-    else:
+        # A 64-token analysis budget cuts gpt-oss off mid-deliberation; uncensored
+        # builds get their full (low-effort) analysis so they reach the answer.
+        if not model.uncensored:
+            args += ["--reasoning-budget", "64"]
+    elif not model.uncensored:
         args += ["--reasoning", "off"]
+    # (uncensored non-gpt-oss: leave reasoning at the model default, i.e. thinking on)
     # MoE-friendly: keep experts in system RAM on 8GB VRAM; trim ctx for speed
     if "deepseek-coder-v2" in path_l:
         args += ["--cpu-moe", "--moe-cache-mib", "1536"]
-        _set_ctx(args, 4096)
+        if not model.uncensored:
+            _set_ctx(args, 4096)
     if "qwen3-coder-30b" in path_l or "30b-a3b" in path_l or "30b-a3b" in id_l:
         args += ["--cpu-moe", "--moe-cache-mib", "3072"]
-        _set_ctx(args, 4096)
+        if not model.uncensored:  # thinking needs the 16K set above
+            _set_ctx(args, 4096)
     return args
 
 
-def build_colibri_args(colibri_model: Path, *, coli: Path, python: str) -> list[str]:
+def build_colibri_args(
+    colibri_model: Path, *, coli: Path, python: str, uncensored: bool = False
+) -> list[str]:
+    # Thinking is decided per request (HAIE sends enable_thinking / reasoning_effort;
+    # `coli serve` ignores --no-think/--effort and reads them from each request).
+    # --policy quality: keeps the GGUF's quantization and the router's exact top-K.
     return [
         python, str(coli),
         "serve",
@@ -323,11 +354,10 @@ def build_colibri_args(colibri_model: Path, *, coli: Path, python: str) -> list[
         "--host", BACKEND_HOST,
         "--port", str(BACKEND_PORT),
         "--gpu", "auto",
-        "--ctx", "4096",
-        "--policy", "experimental-fast",
+        "--ctx", "16384" if uncensored else "8192",  # thinking + answer (HAIE caps max_tokens)
+        "--policy", "quality",
         "--auto-tier",
         "--no-think",
-        "--effort", "low",
     ]
 
 
@@ -389,6 +419,18 @@ def _launch(args: list[str], *, cwd: Path, log: Path, engine: str, model: ModelE
     _write_pidfile(proc.pid, engine, model.id)
 
 
+def _launch_raw(args: list[str], *, cwd: Path, log: Path, engine: str, tag: str) -> None:
+    logf = log.open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        args, stdout=logf, stderr=subprocess.STDOUT, cwd=str(cwd), **_popen_kwargs()
+    )
+    STATE.proc = proc
+    STATE.pid = proc.pid
+    STATE.log_path = str(log)
+    STATE.engine = engine
+    _write_pidfile(proc.pid, engine, tag)
+
+
 def start_llama(model: ModelEntry) -> None:
     llama = paths.llama_server()
     _require_file(llama, "llama-server", "HIVI_LLAMA_SERVER")
@@ -402,7 +444,9 @@ def start_colibri(model: ModelEntry) -> None:
     colibri = ensure_colibri(model)
     coli = paths.colibri_cli()
     _require_colibri(coli)
-    args = build_colibri_args(colibri, coli=coli, python=paths.python_exe())
+    args = build_colibri_args(
+        colibri, coli=coli, python=paths.python_exe(), uncensored=model.uncensored
+    )
     _launch(args, cwd=coli.parent, log=_log_dir() / f"hivi_coli_{model.id}.log",
             engine="colibri", model=model)
     STATE.detail = "coli serve starting"
@@ -415,31 +459,64 @@ def stop_runtime() -> None:
     STATE.name = None
     STATE.engine = None
     STATE.vision = False
+    release_backend()  # also ends the llama router and every model loaded in it
+
+
+def _start_single(model: ModelEntry) -> bool:
+    """Old path: one backend process for one model (Colibrì, or llama without router)."""
     release_backend()
+    _assert_port_free()
+    if model.engine == "colibri":
+        start_colibri(model)
+    else:
+        start_llama(model)
+    return _wait_ready()
+
+
+def _as_llama(model: ModelEntry, why: str) -> ModelEntry:
+    return replace(model, engine="llama", engine_reason=f"llama.cpp fallback: {why}")
 
 
 def select_model(model: ModelEntry) -> RuntimeState:
     """Blocking switch. Call from a worker thread while holding SWITCH_LOCK."""
+    if model.engine == "colibri" and model.id in _COLIBRI_FAILED:
+        model = _as_llama(model, _COLIBRI_FAILED[model.id])
     STATE.status = "starting"
     STATE.model_id = model.id
     STATE.name = model.name
     STATE.engine = model.engine
     STATE.vision = bool(model.vision_projector_path)
     STATE.detail = f"switching to {model.engine}"
+    note = ""
     try:
-        release_backend()
-        _assert_port_free()
         if model.engine == "colibri":
-            start_colibri(model)
-        else:
-            start_llama(model)
-        if not _wait_ready():
+            try:
+                ok = _start_single(model)
+                why = f"Colibrì did not become ready; see {STATE.log_path}"
+            except Exception as e:  # import failed, CLI missing, too old, ...
+                ok, why = False, str(e)
+            if ok:
+                STATE.status = "ready"
+                STATE.detail = f"colibri ready on {BACKEND_BASE}"
+                return STATE
+            # Colibrì can't run this file (unsupported quant/arch): llama.cpp can.
+            print(f"HIVI: {model.name} failed on Colibrì ({why}); falling back to llama.cpp")
+            _COLIBRI_FAILED[model.id] = why[:300]
+            release_backend()
+            model = _as_llama(model, why[:300])
+            STATE.engine = "llama"
+            note = " (Colibrì failed, using llama.cpp)"
+        llama = paths.llama_server()
+        if ROUTER_ENABLED and router_supported(llama) and _preset_safe(model):
+            _select_in_router(model, llama)
+        elif not _start_single(model):
             STATE.status = "error"
             STATE.detail = f"engine failed to become ready; see {STATE.log_path}"
             release_backend()
             return STATE
         STATE.status = "ready"
-        STATE.detail = f"{model.engine} ready on {BACKEND_BASE}"
+        where = "llama router" if STATE.router else "llama"
+        STATE.detail = f"{where} ready on {BACKEND_BASE}{note}"
         return STATE
     except Exception as e:
         STATE.status = "error"
@@ -447,8 +524,354 @@ def select_model(model: ModelEntry) -> RuntimeState:
         return STATE
 
 
+# --------------------------------------------------------------------------- #
+# llama.cpp router mode
+#
+# One llama-server stays up and loads models inside itself (POST /models/load).
+# Switching between llama models then skips the process kill, the port wait and
+# the restart; a model that is still resident switches instantly. The router
+# unloads idle models (least recent first) when VRAM runs short
+# (--models-memory-margin), but it assumes host RAM is unlimited, so HIVI
+# unloads by RAM itself before each load (HIVI_RAM_RESERVE_GB kept free).
+# --------------------------------------------------------------------------- #
+
+def _env_on(name: str, default: bool) -> bool:
+    v = os.environ.get(name, "").strip().lower()
+    if not v:
+        return default
+    return v not in ("0", "off", "false", "no")
+
+
+ROUTER_ENABLED = _env_on("HIVI_LLAMA_ROUTER", True)
+MODELS_MAX = max(1, int(os.environ.get("HIVI_MODELS_MAX", "3") or 3))
+# MiB of VRAM the router keeps free; "off" lets models pile up on the GPU.
+MEMORY_MARGIN = os.environ.get("HIVI_MODELS_MEMORY_MARGIN", "512").strip()
+RAM_RESERVE_GB = float(os.environ.get("HIVI_RAM_RESERVE_GB", "8") or 8)
+_LIVE = ("loaded", "loading", "sleeping")
+
+_HELP: dict[str, str] = {}
+
+
+def _llama_help(llama: Path) -> str:
+    try:
+        key = f"{llama}:{llama.stat().st_mtime_ns}"
+    except OSError:
+        return ""
+    if key not in _HELP:
+        try:
+            r = subprocess.run([str(llama), "--help"], capture_output=True, text=True, timeout=60)
+            _HELP[key] = (r.stdout or "") + (r.stderr or "")
+        except Exception:
+            _HELP[key] = ""
+    return _HELP[key]
+
+
+def router_supported(llama: Path) -> bool:
+    """Older llama-server builds have no router; HIVI then restarts per model."""
+    return "--models-preset" in _llama_help(llama)
+
+
+def _preset_safe(model: ModelEntry) -> bool:
+    # Preset values end at ';' or '#' (INI comments); such paths use the old path.
+    paths_ = [model.path, model.vision_projector_path or ""]
+    return not any(ch in p for p in paths_ for ch in ";#")
+
+
+def _is_value(tok: str) -> bool:
+    if not tok.startswith("-"):
+        return True
+    try:
+        float(tok)
+        return True
+    except ValueError:
+        return False
+
+
+def preset_options(args: list[str]) -> list[tuple[str, str]]:
+    """llama-server CLI (binary first) -> preset key/values. The router owns host/port."""
+    out: list[tuple[str, str]] = []
+    i = 1
+    while i < len(args):
+        key = args[i].lstrip("-")
+        if i + 1 < len(args) and _is_value(args[i + 1]):
+            value, i = args[i + 1], i + 2
+        else:
+            value, i = "true", i + 1
+        if key in ("host", "port"):
+            continue
+        out.append(("model" if key == "m" else key, value))
+    return out
+
+
+def build_llama_preset(models: list[ModelEntry], *, llama: Path, threads: int) -> str:
+    lines = [
+        "; Written by HIVI (runtime.py) for llama-server router mode. Regenerated on",
+        "; every switch, so edit build_llama_args instead of this file.",
+        "version = 1",
+        "",
+    ]
+    for m in sorted(models, key=lambda m: m.id):
+        lines.append(f"[{m.id}]")
+        for k, v in preset_options(build_llama_args(m, llama=llama, threads=threads)):
+            lines.append(f"{k} = {v}")
+        lines.append("stop-timeout = 5")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_router_args(llama: Path, preset: Path, *, margin_ok: bool) -> list[str]:
+    args = [
+        str(llama),
+        "--host", BACKEND_HOST,
+        "--port", str(BACKEND_PORT),
+        "--models-preset", str(preset),
+        "--models-max", str(MODELS_MAX),
+        "--no-models-autoload",  # HIVI loads explicitly; a stale name never loads by surprise
+    ]
+    if margin_ok and MEMORY_MARGIN.lower() not in ("", "off", "0", "none"):
+        args += ["--models-memory-margin", MEMORY_MARGIN]
+    return args
+
+
+def _preset_path() -> Path:
+    d = paths.data_root() / "run"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "hivi_llama_models.ini"
+
+
+def _router_models_wanted(model: ModelEntry) -> list[ModelEntry]:
+    from registry import CHAT, scan_models
+
+    wanted = {m.id: m for m in scan_models() if m.kind == CHAT and m.engine == "llama"
+              and _preset_safe(m)}
+    wanted[model.id] = model  # e.g. a Colibrì model that fell back to llama
+    for mid, why in _COLIBRI_FAILED.items():
+        if mid not in wanted:
+            for m in scan_models():
+                if m.id == mid and _preset_safe(m):
+                    wanted[mid] = _as_llama(m, why)
+    return list(wanted.values())
+
+
+def _sync_preset(model: ModelEntry, llama: Path) -> bool:
+    """Write the preset; True when it changed."""
+    text = build_llama_preset(_router_models_wanted(model), llama=llama, threads=_cpu_threads())
+    path = _preset_path()
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return False
+    except OSError:
+        pass
+    path.write_text(text, encoding="utf-8")
+    return True
+
+
+def _http_json(method: str, path: str, payload: dict | None = None, timeout: float = 10.0):
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{BACKEND_BASE}{path}", data=data, method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read().decode("utf-8") or "null")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8") or "null")
+        except Exception:
+            body = None
+        return e.code, body
+
+
+def _router_rows(reload: bool = False) -> list[dict]:
+    code, body = _http_json("GET", "/models?reload=1" if reload else "/models")
+    rows = (body or {}).get("data") if isinstance(body, dict) else None
+    if code != 200 or not isinstance(rows, list):
+        raise RuntimeError(f"llama router /models answered {code}")
+    return [r for r in rows if isinstance(r, dict)]
+
+
+def _row_status(row: dict | None) -> tuple[str, bool]:
+    st = (row or {}).get("status") or {}
+    if isinstance(st, str):
+        return st, False
+    return str(st.get("value") or "unloaded"), bool(st.get("failed"))
+
+
+def _router_row(mid: str, rows: list[dict] | None = None) -> dict | None:
+    for r in rows if rows is not None else _router_rows():
+        if r.get("id") == mid:
+            return r
+    return None
+
+
+def _router_alive() -> bool:
+    return (
+        STATE.router
+        and STATE.proc is not None
+        and STATE.proc.poll() is None
+        and _health()
+    )
+
+
+def _start_router(llama: Path) -> None:
+    release_backend()  # Colibrì or a single-model llama-server
+    _assert_port_free()
+    args = build_router_args(llama, _preset_path(),
+                             margin_ok="--models-memory-margin" in _llama_help(llama))
+    _launch_raw(args, cwd=llama.parent, log=_log_dir() / "hivi_llama_router.log",
+                engine="llama", tag="llama-router")
+    STATE.router = True
+    STATE.detail = "llama router starting"
+    if not _wait_ready():
+        raise RuntimeError(f"llama router did not start; see {STATE.log_path}")
+
+
+def _total_ram_gb() -> float | None:
+    try:
+        import psutil  # type: ignore
+
+        return psutil.virtual_memory().total / 1024**3
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            ms = _MS()
+            ms.dwLength = ctypes.sizeof(_MS)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):  # type: ignore[attr-defined]
+                return ms.ullTotalPhys / 1024**3
+        except Exception:
+            return None
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) / 1024**2
+    except Exception:
+        return None
+    return None
+
+
+def model_footprint_gb(m: ModelEntry) -> float:
+    """Weights + projector + ~1 GB for KV cache and compute buffers."""
+    extra = 0.0
+    if m.vision_projector_path:
+        try:
+            extra = Path(m.vision_projector_path).stat().st_size / 1024**3
+        except OSError:
+            extra = 1.0
+    return float(m.size_gb or 0) + extra + 1.0
+
+
+def plan_evictions(
+    target: ModelEntry,
+    resident: list[str],
+    sizes: dict[str, float],
+    budget_gb: float,
+) -> list[str]:
+    """Which resident models (least recent first) to unload so ``target`` fits in RAM."""
+    keep = [m for m in resident if m != target.id]
+    used = sum(sizes.get(m, 0.0) for m in keep)
+    need = model_footprint_gb(target)
+    out: list[str] = []
+    for mid in keep:  # oldest first
+        if used + need <= budget_gb:
+            break
+        out.append(mid)
+        used -= sizes.get(mid, 0.0)
+    return out
+
+
+def _make_ram_room(model: ModelEntry, rows: list[dict]) -> None:
+    from registry import scan_models
+
+    live = [r["id"] for r in rows if _row_status(r)[0] in _LIVE and r.get("id") != model.id]
+    if not live:
+        return
+    # Least recent first: ones HIVI doesn't know about, then HIVI's LRU order.
+    order = [m for m in live if m not in STATE.resident] + [m for m in STATE.resident if m in live]
+    total = _total_ram_gb() or 32.0
+    sizes = {m.id: model_footprint_gb(m) for m in scan_models() if m.id in live}
+    for mid in plan_evictions(model, order, sizes, total - RAM_RESERVE_GB):
+        STATE.detail = f"unloading {mid} to free RAM"
+        _http_json("POST", "/models/unload", {"model": mid})
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if _row_status(_router_row(mid))[0] not in _LIVE:
+                break
+            time.sleep(0.25)
+        if mid in STATE.resident:
+            STATE.resident.remove(mid)
+
+
+def _router_load(model: ModelEntry) -> None:
+    status, _ = _row_status(_router_row(model.id))
+    if status != "loaded":
+        if status != "loading":
+            # Synchronous until the instance is spawned: the router first waits for
+            # the model's memory measurement and unloads idle models to make room.
+            STATE.detail = f"making room for {model.name}"
+            code, body = _http_json("POST", "/models/load", {"model": model.id}, timeout=300)
+            msg = (body or {}).get("error") if isinstance(body, dict) else body
+            if code >= 400 and "already running" not in json.dumps(msg):
+                raise RuntimeError(f"llama router refused to load {model.id}: {msg}")
+        STATE.detail = f"loading {model.name} in the llama router"
+        t0 = time.time()
+        while True:
+            if STATE.proc is not None and STATE.proc.poll() is not None:
+                raise RuntimeError(f"llama router exited; see {STATE.log_path}")
+            status, failed = _row_status(_router_row(model.id))
+            if status == "loaded":
+                break
+            if status == "unloaded":  # the load request returns once it is "loading"
+                why = "exited during load" if failed else "was unloaded during load"
+                raise RuntimeError(f"{model.name} {why}; see {STATE.log_path}")
+            if time.time() - t0 > READY_TIMEOUT_S:
+                raise RuntimeError(f"{model.name} did not load within {READY_TIMEOUT_S:.0f}s")
+            time.sleep(0.25)
+    if model.id in STATE.resident:
+        STATE.resident.remove(model.id)
+    STATE.resident.append(model.id)
+    STATE.backend_model = model.id
+
+
+def _select_in_router(model: ModelEntry, llama: Path) -> None:
+    changed = _sync_preset(model, llama)
+    if not _router_alive():
+        _start_router(llama)
+    elif changed:
+        _router_rows(reload=True)  # pick up new / changed presets; others stay loaded
+    STATE.engine = "llama"
+    STATE.backend_model = None
+    rows = _router_rows()
+    _make_ram_room(model, rows)
+    _router_load(model)
+    STATE.resident = [m for m in STATE.resident
+                      if _row_status(_router_row(m))[0] in _LIVE]  # router may have evicted
+
+
+def backend_model_name() -> str | None:
+    """Model name the backend expects in requests (router mode only)."""
+    return STATE.backend_model if STATE.router else None
+
+
 def status_dict() -> dict:
-    healthy = _health() if STATE.status == "ready" else False
+    healthy = False
+    if STATE.status == "ready":
+        healthy = _health()
+        if healthy and STATE.router and STATE.backend_model:
+            try:
+                healthy = _row_status(_router_row(STATE.backend_model))[0] in ("loaded", "sleeping")
+            except Exception:
+                healthy = False
     status = STATE.status
     if status == "ready" and not healthy:
         status = "unhealthy"  # was reported as "ready" even after the engine died
@@ -465,4 +888,6 @@ def status_dict() -> dict:
         "log": STATE.log_path,
         "vision": STATE.vision,
         "switching": SWITCH_LOCK.locked(),
+        "router": STATE.router,
+        "resident": list(STATE.resident),
     }

@@ -14,6 +14,7 @@ import runtime
 def models_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "Models"
     monkeypatch.setenv("HIVI_MODELS_ROOT", str(root))
+    monkeypatch.setenv("HIVI_DATA_ROOT", str(tmp_path / "data"))  # engine pins live here
     return root
 
 
@@ -75,7 +76,8 @@ def test_projector_does_not_leak_across_folders(models_dir: Path):
     by_name = {Path(m.path).parent.name: m for m in registry.scan_models()}
     assert by_name["base"].vision_projector_path
     assert by_name["heretic"].vision_projector_path is None
-    assert by_name["heretic"].engine == "llama"  # uncensored builds run on llama.cpp
+    assert by_name["base"].engine == "llama"  # vision needs --mmproj
+    assert by_name["heretic"].engine == "colibri"  # text-only qwen3.6 → Colibrì
 
 
 def test_plain_qwen3_text_model_keeps_colibri(models_dir: Path):
@@ -84,7 +86,8 @@ def test_plain_qwen3_text_model_keeps_colibri(models_dir: Path):
     assert m.engine == "colibri"
 
 
-def test_uncensored_builds_route_to_llama(models_dir: Path):
+def test_uncensored_builds_follow_their_family(models_dir: Path):
+    """Abliterated/heretic qwen builds go to Colibrì like their base models."""
     names = [
         "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf",
         "Qwen3.6-35B-A3B-uncensored-heretic-Native-MTP-Preserved-Q6_K.gguf",
@@ -93,9 +96,24 @@ def test_uncensored_builds_route_to_llama(models_dir: Path):
     ]
     for i, name in enumerate(names):
         _touch(models_dir / "Coding" / f"m{i}" / name)
-    entries = registry.scan_models()
-    assert len(entries) == len(names)
-    assert all(m.engine == "llama" for m in entries), [(m.path, m.engine) for m in entries]
+    _touch(models_dir / "Reasoning" / "oss" / "gpt-oss-20b-abliterated-q8_0.gguf")
+    entries = {Path(m.path).parent.name: m for m in registry.scan_models()}
+    assert all(entries[f"m{i}"].engine == "colibri" for i in range(len(names)))
+    assert entries["oss"].engine == "llama"  # architecture Colibrì doesn't run
+
+
+def test_engine_pin_overrides_auto_choice(models_dir: Path):
+    _touch(models_dir / "Coding" / "a" / "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf")
+    (m,) = registry.scan_models()
+    assert m.engine == "colibri"
+    registry.set_engine_pin(m.id, "llama")
+    (m,) = registry.scan_models()
+    assert m.engine == "llama" and "pinned" in m.engine_reason
+    registry.set_engine_pin(m.id, "auto")
+    (m,) = registry.scan_models()
+    assert m.engine == "colibri"
+    with pytest.raises(ValueError):
+        registry.set_engine_pin(m.id, "ollama")
 
 
 def test_gpt_oss_stays_on_llama(models_dir: Path):
@@ -106,10 +124,12 @@ def test_gpt_oss_stays_on_llama(models_dir: Path):
 
 # ---- runtime command lines ------------------------------------------------
 
-def _entry(path: str, *, projector: str | None = None, mid: str = "m") -> registry.ModelEntry:
+def _entry(path: str, *, projector: str | None = None, mid: str = "m",
+           uncensored: bool = False) -> registry.ModelEntry:
     return registry.ModelEntry(
         id=mid, name="x", path=path, quant="Q4_K_M", params="?", size_gb=1.0,
         engine="llama", engine_reason="", vision_projector_path=projector,
+        uncensored=uncensored,
     )
 
 
@@ -133,10 +153,84 @@ def test_llama_args_moe_and_gpt_oss_flags():
     assert str(runtime.BACKEND_PORT) in oss
 
 
+def test_uncensored_llama_args_keep_model_defaults():
+    normal = runtime.build_llama_args(_entry("/m/Qwen3.6-35B-A3B-Q5_K_M.gguf"),
+                                      llama=Path("llama-server"), threads=8)
+    assert normal[normal.index("--reasoning") + 1] == "off"
+    assert "--repeat-penalty" in normal and "--frequency-penalty" in normal
+    unc = runtime.build_llama_args(
+        _entry("/m/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf", uncensored=True),
+        llama=Path("llama-server"), threads=8)
+    assert "--reasoning" not in unc  # thinking decided per request by HAIE
+    assert unc[unc.index("-c") + 1] == "16384"
+    assert "--repeat-penalty" not in unc and "--frequency-penalty" not in unc
+    oss = runtime.build_llama_args(_entry("/m/gpt-oss-20b-abliterated-q8_0.gguf", uncensored=True),
+                                   llama=Path("llama-server"), threads=8)
+    assert oss[oss.index("--reasoning") + 1] == "on" and "--reasoning-budget" not in oss
+
+
+def test_registry_flags_uncensored_chat_models(models_dir: Path):
+    _touch(models_dir / "Coding" / "a" / "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf")
+    _touch(models_dir / "General" / "b" / "Qwen3.6-35B-A3B-Q5_K_M.gguf")
+    by_dir = {Path(m.path).parent.name: m for m in registry.scan_models()}
+    assert by_dir["a"].uncensored is True and by_dir["b"].uncensored is False
+
+
 def test_colibri_args_use_backend_port():
     args = runtime.build_colibri_args(Path("model.colibri"), coli=Path("coli"), python="py")
     assert args[:3] == ["py", "coli", "serve"]
     assert args[args.index("--port") + 1] == str(runtime.BACKEND_PORT)
+    assert args[args.index("--policy") + 1] == "quality"  # keeps quantization + exact routing
+    assert args[args.index("--ctx") + 1] == "8192"
+    unc = runtime.build_colibri_args(Path("m.colibri"), coli=Path("coli"), python="py",
+                                     uncensored=True)
+    assert unc[unc.index("--ctx") + 1] == "16384"
+
+
+# ---- llama router mode --------------------------------------------------------
+
+def test_preset_options_translate_cli_args():
+    m = _entry("C:/M/qwen.gguf", projector="C:/M/mmproj-F16.gguf", mid="qwen")
+    opts = dict(runtime.preset_options(
+        runtime.build_llama_args(m, llama=Path("llama-server"), threads=8)))
+    assert opts["model"] == "C:/M/qwen.gguf"
+    assert opts["mmproj"] == "C:/M/mmproj-F16.gguf"
+    assert opts["jinja"] == "true" and opts["c"] == "8192" and opts["fa"] == "on"
+    assert "host" not in opts and "port" not in opts  # the router owns these
+
+
+def test_preset_file_has_one_section_per_model():
+    text = runtime.build_llama_preset(
+        [_entry("/m/a.gguf", mid="a"), _entry("/m/gpt-oss-20b.gguf", mid="oss", uncensored=True)],
+        llama=Path("llama-server"), threads=6)
+    assert "[a]" in text and "[oss]" in text
+    oss = text.split("[oss]")[1]
+    assert "reasoning = on" in oss and "model = /m/gpt-oss-20b.gguf" in oss
+    assert "-" not in [line.split("=")[0].strip()[:1] for line in text.splitlines() if "=" in line]
+
+
+def test_router_args(monkeypatch):
+    monkeypatch.setattr(runtime, "MEMORY_MARGIN", "512")
+    args = runtime.build_router_args(Path("llama-server"), Path("p.ini"), margin_ok=True)
+    assert "-m" not in args and "--models-preset" in args and "--no-models-autoload" in args
+    assert args[args.index("--models-memory-margin") + 1] == "512"
+    old = runtime.build_router_args(Path("llama-server"), Path("p.ini"), margin_ok=False)
+    assert "--models-memory-margin" not in old  # older builds without the flag
+
+
+def test_paths_with_ini_comment_chars_skip_router():
+    assert runtime._preset_safe(_entry("C:/M/qwen.gguf"))
+    assert not runtime._preset_safe(_entry("C:/M/#new/qwen.gguf"))
+
+
+def test_ram_evictions_oldest_first():
+    big = _entry("/m/big.gguf", mid="big")
+    big.size_gb = 20.0
+    sizes = {"old": 7.0, "mid": 7.0, "new": 3.0}
+    # 24 GB budget: 17 resident + 21 needed → drop oldest until it fits
+    assert runtime.plan_evictions(big, ["old", "mid", "new"], sizes, 24.0) == ["old", "mid"]
+    small = _entry("/m/s.gguf", mid="s")
+    assert runtime.plan_evictions(small, ["old", "mid", "new"], sizes, 24.0) == []
 
 
 def test_release_backend_never_touches_unowned_processes(monkeypatch, tmp_path: Path):

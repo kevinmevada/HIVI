@@ -28,6 +28,31 @@ If the Colibrì tag name differs upstream, pass the commit you tested:
 | `HIVI_EMBED_PORT` | `8081` (embedding side service, see `MODEL_ROUTER.md`) |
 | `HIVI_RERANK_PORT` | `8082` (reranker side service) |
 | `HIVI_LOG_DIR` | `data/logs` |
+| `HIVI_LLAMA_ROUTER` | `1` — keep one llama-server running and load models inside it; `0` restarts per model |
+| `HIVI_MODELS_MAX` | `3` — llama models the router may hold at once |
+| `HIVI_MODELS_MEMORY_MARGIN` | `512` MiB of VRAM kept free; the router unloads idle models (oldest first) to load a new one. `off` lets models share the GPU |
+| `HIVI_RAM_RESERVE_GB` | `8` — HIVI unloads idle router models so loaded weights + this reserve fit in RAM (the router itself assumes RAM is unlimited) |
+
+## Which engine runs a model
+
+`interfaces/hivi-chat/registry.py` picks per file:
+
+- **Colibrì**: Qwen3 / 3.5 / 3.6 / 3.8 text models, uncensored builds included.
+  Its GPU/RAM tiering is built for models larger than VRAM (27B on the 8 GB
+  RTX 5060: ~38 s vs ~125 s for llama.cpp, `benchmarks/27b_comparison`).
+- **llama.cpp**: GPT-OSS, Gemma, Qwen2.5, Qwen3-Coder-30B, anything with a
+  vision projector (`mmproj-*.gguf` in its folder), embeddings and rerankers.
+- If Colibrì cannot import or start a file, HIVI falls back to llama.cpp for
+  the rest of the session (the status line says so).
+- Pin a model either way; it applies on the next load:
+  `POST /api/engine {"id": "<model id>", "engine": "llama" | "colibri" | "auto"}`
+  (stored in `data/run/hivi_engines.json`).
+
+llama.cpp models run in **router mode** when the llama-server build has it
+(`--models-preset`): switching between llama models keeps the process, and a
+model that is still loaded switches instantly. Switching to or from Colibrì
+still restarts the engine. The generated preset is
+`data/run/hivi_llama_models.ini`; the router log is `data/logs/hivi_llama_router.log`.
 
 ## One-time migration for an existing clone
 
