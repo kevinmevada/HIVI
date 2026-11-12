@@ -7,7 +7,10 @@ llama-server side services (see aux_services.py) and never take the chat slot.
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -166,6 +169,7 @@ def set_engine_pin(model_id: str, engine: str | None) -> dict[str, str]:
     f = _pins_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(pins, indent=2, sort_keys=True), encoding="utf-8")
+    clear_scan_cache()
     return pins
 
 
@@ -205,9 +209,35 @@ def _find_projector(gguf: Path) -> Path | None:
     return None
 
 
+# Every chat message looked up the model several times (alias resolve, uncensored
+# check, route hint), and each lookup walked the whole Models folder. A short-lived
+# cache keeps that off the hot path; new GGUF files still show up within seconds.
+_SCAN_TTL_S = float(os.environ.get("HIVI_SCAN_TTL_S", "10") or 10)
+_SCAN_CACHE: dict[str, tuple[float, list[ModelEntry]]] = {}
+_SCAN_LOCK = threading.Lock()
+
+
+def clear_scan_cache() -> None:
+    with _SCAN_LOCK:
+        _SCAN_CACHE.clear()
+
+
 def scan_models(root: Path | None = None) -> list[ModelEntry]:
-    out: list[ModelEntry] = []
     models_dir = Path(root) if root is not None else models_root()
+    key = str(models_dir.resolve()) if models_dir.exists() else str(models_dir)
+    now = time.monotonic()
+    with _SCAN_LOCK:
+        hit = _SCAN_CACHE.get(key)
+        if hit and now - hit[0] < _SCAN_TTL_S:
+            return list(hit[1])
+    out = _scan_models_uncached(models_dir)
+    with _SCAN_LOCK:
+        _SCAN_CACHE[key] = (time.monotonic(), out)
+    return list(out)
+
+
+def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
+    out: list[ModelEntry] = []
     if not models_dir.exists():
         return out
     pins = engine_pins()

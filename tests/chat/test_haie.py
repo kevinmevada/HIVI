@@ -44,7 +44,8 @@ def test_image_messages_still_yield_text():
     assert extract_last_user(body) == "what is in this picture"
 
 
-def test_unreachable_backend_falls_back_and_client_values_win():
+def test_unreachable_backend_falls_back_and_client_values_win(monkeypatch):
+    monkeypatch.setenv("HIVI_HAIE_SEMANTIC", "1")  # exercise the opt-in LLM classifier
     body = {
         "model": "local",
         "temperature": 0.9,  # explicit client value must survive
@@ -178,6 +179,7 @@ def test_short_followups_get_previous_exchange_as_classifier_context(monkeypatch
     """ "make it async" can't be classified without knowing what "it" is."""
     import haie.semantic as semantic
 
+    monkeypatch.setenv("HIVI_HAIE_SEMANTIC", "1")  # the opt-in LLM classifier path
     seen: list[str] = []
 
     def fake_call(*, client, url, model, prompt, system, max_tokens, prefill):
@@ -211,3 +213,34 @@ def test_short_followups_get_previous_exchange_as_classifier_context(monkeypatch
     assert try_fast_path("tell me a joke", history_len=3).intents == ["chat"]
     for t in ("make it async", "now do it in rust", "same for the other one"):
         assert try_fast_path(t, history_len=3) is None, t
+
+
+def test_default_path_never_calls_the_model(monkeypatch):
+    """HAIE must not put a second model call in front of the reply by default."""
+    import time
+
+    import haie.semantic as semantic
+
+    monkeypatch.delenv("HIVI_HAIE_SEMANTIC", raising=False)
+    monkeypatch.setattr(semantic, "classify_semantic",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("LLM classify called")))
+    history = [{"role": "user", "content": "write a python scraper for job postings"},
+               {"role": "assistant", "content": "Here is the script ..."}]
+    cases = {
+        "how are you": "chat",
+        "make it async": "coding",
+        "yes do it": "coding",          # follow-up inherits the previous request
+        "write an email to my professor asking for an extension": "writing",
+        "review my sql query: SELECT * FROM users": "coding",
+        "solve 2x + 5 = 13": "math",
+        "give me 5 ideas for a side project": "brainstorm",
+        "design a URL shortener system": "architecture",
+        "what's the difference between a process and a thread": "explanation",
+        "rewrite this paragraph to sound more professional": "writing",
+    }
+    for text, intent in cases.items():
+        t0 = time.perf_counter()
+        _, meta = plan_request({"model": "m", "messages": history + [{"role": "user", "content": text}]},
+                               engine="llama", backend_base=DEAD_BACKEND, model_id=None)
+        assert (time.perf_counter() - t0) < 0.05, text
+        assert intent in meta.intents, (text, meta.intents)

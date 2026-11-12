@@ -14,6 +14,7 @@ VALID_INTENTS = frozenset(
         "math",
         "research",
         "brainstorm",
+        "writing",  # emails, letters, rewrites: natural prose, not code-tight sampling
         "chat",
     }
 )

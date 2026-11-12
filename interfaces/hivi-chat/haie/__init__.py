@@ -1,6 +1,7 @@
 """HIVI Adaptive Intelligence Engine (HAIE) V1.2 — quality + latency; params-only."""
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -9,10 +10,16 @@ from .eval_store import log_plan
 from .fast_path import extract_last_user, try_fast_path
 from .heuristic import try_heuristic_path
 from .policy import adapt_for_uncensored, adapt_thinking, derive_params
+from .rules import classify as classify_rules
 from .semantic import classify_semantic
 from .types import PlanMeta, Understanding
 
 _MODEL_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def semantic_enabled() -> bool:
+    """The LLM classifier is opt-in: it delays every ambiguous reply by a model call."""
+    return os.environ.get("HIVI_HAIE_SEMANTIC", "").strip().lower() in ("1", "true", "yes", "on")
 _MODEL_CACHE_TTL = 60.0
 
 
@@ -131,10 +138,16 @@ def plan_request(
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     history_len = len(messages)
 
-    understanding = try_fast_path(user, history_len=history_len)
     classify_ms: float | None = None
     classify_prompt_ms: float | None = None
     classify_predicted_ms: float | None = None
+    if not semantic_enabled():
+        # Default: instant rules, no second model call before the reply.
+        t0 = time.perf_counter()
+        understanding = classify_rules(user, messages)
+        classify_ms = (time.perf_counter() - t0) * 1000.0
+    else:
+        understanding = try_fast_path(user, history_len=history_len)
     if understanding is None:
         # Clear single-intent → heuristic (no LLM round-trip)
         understanding = try_heuristic_path(user)

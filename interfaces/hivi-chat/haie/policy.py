@@ -16,6 +16,7 @@ _PROFILE = {
     "math": (0.10, 512),  # V1.2: was 4096 — too wasteful for arithmetic
     "research": (0.20, 6144),
     "brainstorm": (0.80, 4096),
+    "writing": (0.55, 1536),
     "chat": (0.50, 1024),
 }
 
@@ -41,6 +42,7 @@ def _intent_top_p(intent: str) -> float:
         "architecture": 0.9,
         "brainstorm": 0.95,
         "research": 0.92,
+        "writing": 0.93,
         "greeting": 0.9,
         "chat": 0.92,
     }.get(intent, 0.92)
@@ -54,6 +56,7 @@ def _intent_top_k(intent: str) -> int:
         "architecture": 50,
         "brainstorm": 80,
         "research": 50,
+        "writing": 60,
         "greeting": 40,
         "chat": 50,
     }.get(intent, 50)
