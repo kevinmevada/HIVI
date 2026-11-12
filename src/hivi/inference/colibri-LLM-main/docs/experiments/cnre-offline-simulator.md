@@ -7,7 +7,8 @@ rejected before changing inference code or renting hardware.
 
 ## Scope
 
-`c/tools/residency_sim.py` currently models the main GLM CPU-routing path:
+`c/tools/residency_sim.py` models the main GLM CPU-routing path by default,
+and OLMoE's with `--engine olmoe` (below). For GLM it models:
 
 - first-seen expert unions for each contiguous `(call, layer)` batch;
 - promotion between GLM's 64-expert working-set blocks;
@@ -31,9 +32,34 @@ model this existing overlap. Long-prefill felt-wait estimates are therefore
 conservative and must be checked with lower `felt_fraction` sensitivity.
 
 Kimi K3 traces are not currently safe input because that engine emits routes
-without advancing the trace call ID. Inkling and OLMoE initialize routing
-telemetry but do not currently emit route records. Their cache traversal also
-differs from GLM, so each needs an explicit engine profile before inclusion.
+without advancing the trace call ID. Inkling initializes routing telemetry but
+does not currently emit route records. Their cache traversal also differs from
+GLM, so each needs an explicit engine profile before inclusion.
+
+OLMoE **does** emit route records now. It announced `ROUTE_TRACE` at startup
+and wrote a zero-byte file for as long as the stream existed, because
+`rt_init()` opens the file but nothing in `moe()` ever called `rt_trace()` — a
+consumer saw "no data" rather than an error. `moe()` calls `rt_route()` per
+position and `rt_trace_end()` once per invocation, so the stream has one line
+per `(moe call, position, layer)` with `call` advancing once per layer per
+forward (16 calls per forward on OLMoE, rows `0..S-1` within each). Pass
+`--engine olmoe` to replay it with OLMoE's own cache traversal instead of GLM's:
+
+- `olmoe.c`'s `expert_get()` fetches one expert at a time and admits a miss
+  immediately into the layer's LRU (`--cap` slots), with no 64-expert promotion
+  block and no batch admission;
+- a one-row call (decode) fetches its top-k in rank order;
+- a prompt is routed in blocks of 128 rows (`OLMOE_PREFILL_ROWS`), and each block
+  fetches every expert it routed once, in ascending expert id (the counting sort
+  in `moe_by_expert`). The block's other rows on that expert are served by the
+  same slot; they count toward training frequencies, not toward demand I/O.
+
+The profile turns every fetch into a one-expert event, so `--max-training-events`
+counts fetches for this engine, not call groups. It models the CPU path only: the
+Vulkan expert tier, the PILOT prefetcher and `HOT=`/`hot_pinned.bin` startup pins
+are out of scope. Record traces without pins: once `hot_pinned` is set the engine
+stops calling `rt_route()`, so a pinned run writes no records. Raw softmax gates
+(`norm_topk_prob=false`) do not matter here, since residency uses only expert ids.
 
 ## Trace contract
 
@@ -240,7 +266,9 @@ first useful campaign needs:
 3. Exact commit, model/container identity, DRAFT/sampling settings, cache state,
    prefill chunk, and frozen `.coli_usage` snapshot.
 4. Separate instrumentation fixes and engine profiles before Kimi K3, Inkling,
-   or OLMoE data is interpreted by this simulator.
+   or OLMoE data is interpreted by this simulator. OLMoE's instrumentation fix
+   (it emitted no route records) has landed, so only its engine profile and a
+   trace campaign remain.
 
 No server is required to run the simulator. A model-capable machine is needed
 only to collect missing traces and later validate a policy end to end.

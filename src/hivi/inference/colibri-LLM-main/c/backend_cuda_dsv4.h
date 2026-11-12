@@ -64,6 +64,10 @@ int dsv4_cuda_fp8_ref_matmul(int device,const uint8_t *w,const float *bscale,
 int dsv4_cuda_backend_arch_ok(int device);
 const char *dsv4_cuda_backend_name(void);
 long long dsv4_cuda_mem_free_mb(int device);
+/* 1 on unified-memory devices (integrated GPU, or pageable access through the
+ * host page tables), where mem_free_mb is the system's free memory rather
+ * than headroom on a card. 0 when unknown. */
+int dsv4_cuda_device_unified(int device);
 /* Drain the device's expert stream (hybrid split: async fill DMA is enqueued,
  * the CPU subset computes meanwhile, this closes the pipeline). Returns 1 on
  * success, 0 when the backend is unavailable. */
@@ -187,6 +191,9 @@ Dsv4CudaExpertSet *dsv4_cuda_expert_set_create(Dsv4CudaTensor *const *gate,Dsv4C
                                                 Dsv4CudaTensor *const *down,int count,
                                                 Dsv4CudaTensor *shared_gate,Dsv4CudaTensor *shared_up,
                                                 Dsv4CudaTensor *shared_down);
+int dsv4_cuda_expert_bank_slots(int experts);
+/* Device bytes one slot of an expert bank of this geometry takes. */
+long long dsv4_cuda_expert_bank_slot_bytes(int hidden,int intermediate);
 Dsv4CudaExpertSet *dsv4_cuda_expert_bank_create(int count,int hidden,int intermediate,int device,
                                                  Dsv4CudaTensor *shared_gate,Dsv4CudaTensor *shared_up,
                                                  Dsv4CudaTensor *shared_down);

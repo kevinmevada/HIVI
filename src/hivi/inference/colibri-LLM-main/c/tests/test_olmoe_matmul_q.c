@@ -97,6 +97,7 @@ int main(void) {
     ref_matmul(ref, x, q, scale, I, O);
 
 #if !defined(HAVE_FAST_DOT_I8)
+    (void)failures;   /* every increment lives in the #else branch */
     printf("SKIP: no fast int8 dot compiled in; IDOT path unreachable\n");
     printf("      (build with -mavx2 on x86 or on an ARM NEON target)\n");
     free(x); free(q); free(scale); free(y); free(ref);
@@ -163,6 +164,30 @@ int main(void) {
         printf("FAIL  IDOT=1 no longer reaches the fast path\n");
         failures++;
     }
+
+#if defined(__AVX2__)   /* moe_fused3 exists with the AVX2 kernels only */
+    /* --- 5. FUSED3 must follow IDOT, never switch the lossy path on by itself --
+     * FUSED3's kernels are bit-identical to the IDOT branch, i.e. lossy against the
+     * default path. moe_fused3 used to read an unset IDOT as "on", so FUSED3=1 alone
+     * changed the experts' numerics (greedy text diverged at char 257 of 96 tokens). */
+    g_fused3 = 1;
+    matmul_q_idot_force = 0;
+    if (!moe_fused3(512, 256)) {
+        printf("PASS  FUSED3=1 without IDOT=1 stays on the exact path\n");
+    } else {
+        printf("FAIL  FUSED3=1 alone takes the lossy fused path\n");
+        failures++;
+    }
+    matmul_q_idot_force = 1;
+    if (moe_fused3(512, 256) && !moe_fused3(500, 256)) {
+        printf("PASS  FUSED3=1 with IDOT=1 takes the fused path (only for dims %% 16 == 0)\n");
+    } else {
+        printf("FAIL  FUSED3=1 with IDOT=1 does not gate on the IDOT contract\n");
+        failures++;
+    }
+    g_fused3 = 0;
+#endif
+    matmul_q_reset_for_test();
 
     free(x); free(q); free(scale); free(y); free(ref);
     printf("\n%s\n", failures ? "FAILED" : "ALL PASS");

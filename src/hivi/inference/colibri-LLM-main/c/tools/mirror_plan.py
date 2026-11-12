@@ -359,10 +359,50 @@ def safe_receipt_name(value):
             and Path(value).name == value and value.endswith(".safetensors"))
 
 
-def verify_mirror(mirror):
+def verify_full_mirror(model, mirror, source_dirs=()):
+    model = Path(model).expanduser().resolve()
+    mirror = Path(mirror).expanduser().resolve()
+    _directories, candidates = discover_shards(model, source_dirs)
+
+    failures = []
+    mirrored_bytes = 0
+    for item in candidates:
+        name = item["name"]
+        size = item["size"]
+        target = mirror / name
+        if target.is_symlink() or not target.is_file():
+            failures.append(name + " (missing)")
+            continue
+        if target.stat().st_size != size:
+            failures.append(name + " (size)")
+            continue
+        try:
+            shard_metadata(target)
+        except MirrorError:
+            failures.append(name + " (header)")
+            continue
+        if sha256(target) != sha256(item["source"]):
+            failures.append(name + " (sha256)")
+            continue
+        mirrored_bytes += size
+
+    return {
+        "schema": SCHEMA,
+        "ready": not failures,
+        "mirror_root": str(mirror),
+        "verification_mode": "full_mirror",
+        "file_count": len(candidates),
+        "mirrored_bytes": mirrored_bytes,
+        "failures": failures,
+    }
+
+
+def verify_mirror(mirror, model=None, source_dirs=()):
     mirror = Path(mirror).expanduser().resolve()
     receipt_path = mirror / RECEIPT
     if not receipt_path.is_file():
+        if model is not None:
+            return verify_full_mirror(model, mirror, source_dirs)
         return {"schema": SCHEMA, "ready": False, "mirror_root": str(mirror),
                 "reason": "receipt_missing", "failures": []}
     receipt = load_json(receipt_path)
@@ -371,6 +411,10 @@ def verify_mirror(mirror):
     if receipt.get("schema") != SCHEMA or not isinstance(files, list) or not files:
         return {"schema": SCHEMA, "ready": False, "mirror_root": str(mirror),
                 "reason": "invalid_receipt", "failures": []}
+    sources = None
+    if model is not None:
+        _directories, candidates = discover_shards(model, source_dirs)
+        sources = {item["name"]: item for item in candidates}
     mirrored_bytes = 0
     names = set()
     for item in files:
@@ -389,6 +433,12 @@ def verify_mirror(mirror):
                 not isinstance(digest, str) or SHA256_HEX.fullmatch(digest) is None):
             failures.append(name + " (metadata)")
             continue
+        if sources is not None:
+            source = sources.get(name)
+            if source is None:
+                failures.append(name + " (source missing)")
+            elif source["size"] != size or sha256(source["source"]) != digest:
+                failures.append(name + " (source sha256)")
         mirrored_bytes += size
         if target.is_symlink() or not target.is_file() or target.stat().st_size != size:
             failures.append(name + " (size)")
@@ -424,7 +474,7 @@ def main(argv=None):
     model = Path(args.model)
     mirror = Path(args.mirror)
     if args.action == "verify":
-        payload = verify_mirror(mirror)
+        payload = verify_mirror(mirror, model, args.source_dir)
         print(json.dumps(payload, indent=2))
         return 0 if payload["ready"] else 4
     if (not math.isfinite(args.budget_gib) or args.budget_gib <= 0 or

@@ -137,6 +137,43 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(check["details"], {"requested": [1], "detected": []})
         self.assertEqual(exit_code(report), 1)
 
+    def test_vulkan_engine_is_a_gpu_engine(self):
+        """#2081: a VK=1 engine opens the Vulkan loader at run time, so ldd shows no GPU
+        runtime and doctor called a working Vulkan build CPU-only. The loader's name in
+        the binary says what it is; the plan is a COLI_VULKAN=1 run's."""
+        self.engine.write_bytes(b"\x7fELF ... [VK] ... libvulkan.so.1 ... libvulkan.so ...")
+        self.engine.chmod(0o755)
+        with mock.patch("doctor.vulkan_loader_present", return_value=True):
+            self.assertEqual(cuda_linkage(self.engine), {"linked": True, "missing": False, "vulkan": True})
+        with mock.patch("doctor.vulkan_loader_present", return_value=False):
+            self.assertEqual(cuda_linkage(self.engine), {"linked": False, "missing": True, "vulkan": True})
+        device = {"name": "Fixture GPU", "type": "discrete"}
+        with mock.patch("setup_hw.detect_vulkan", return_value={"devices": [device]}):
+            report = self.report(gpu_indices=None, linkage={"linked": True, "missing": False, "vulkan": True})
+        check = self.checks_by_id(report)["accelerator.gpu"]
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("Vulkan", check["summary"])
+        self.assertEqual(report["plan"]["vulkan"], device)
+        from resource_plan import format_plan
+        self.assertIn("VRAM   Vulkan · Fixture GPU (discrete)", format_plan(report["plan"]))
+        report = self.report(gpu_indices=None, linkage={"linked": False, "missing": True, "vulkan": True})
+        self.assertEqual(self.checks_by_id(report)["accelerator.gpu"]["status"], "fail")
+
+    def test_vulkan_plan_respects_explicit_cpu_selection(self):
+        device = {'name': 'Fixture GPU', 'type': 'discrete'}
+        with mock.patch('setup_hw.detect_vulkan', return_value={'devices': [device]}):
+            report = self.report(gpu_indices=[], linkage={
+                'linked': True, 'missing': False, 'vulkan': True})
+        self.assertEqual(self.checks_by_id(report)['accelerator.gpu']['status'], 'skip')
+        self.assertIsNone(report['plan']['vulkan'])
+
+    def test_cpu_binary_does_not_inherit_vulkan_placement_from_environment(self):
+        device = {'name': 'Fixture GPU', 'type': 'discrete'}
+        with mock.patch.dict(os.environ, {'COLI_VULKAN': '1'}), \
+                mock.patch('setup_hw.detect_vulkan', return_value={'devices': [device]}):
+            report = self.report(gpu_indices=None, linkage={'linked': False, 'missing': False})
+        self.assertIsNone(report['plan']['vulkan'])
+
     def test_cpu_engine_with_detected_gpu_is_only_a_warning(self):
         gpu = {"index": 0, "name": "fixture", "total_bytes": 12 * GB,
                "free_bytes": 10 * GB}
@@ -241,6 +278,22 @@ class DoctorTest(unittest.TestCase):
         engine.write_bytes(b"a plain CPU build with no backend loader")
         self.assertEqual(self._win_linkage(engine),
                          {"linked": False, "missing": False})
+
+    def test_windows_kimi_cuda_host_without_glm_banner(self):
+        """Kimi K3 CUDA_DLL=1 never prints [CUDA] mode: routed experts.
+        The loader still compiles coli_cuda.dll into the host, and that is
+        the artifact doctor must require -- the same pair cuda_binary uses."""
+        engine = self.root / "kimi_k3.exe"
+        engine.write_bytes(b"MZ [K3-CUDA] MXFP4 routed experts coli_cuda.dll")
+        (self.root / "coli_cuda.dll").write_bytes(b"")
+        self.assertEqual(self._win_linkage(engine),
+                         {"linked": True, "missing": False})
+
+    def test_windows_kimi_cuda_host_missing_dll_is_missing(self):
+        engine = self.root / "kimi_k3.exe"
+        engine.write_bytes(b"MZ [K3-CUDA] MXFP4 routed experts coli_cuda.dll")
+        self.assertEqual(self._win_linkage(engine),
+                         {"linked": False, "missing": True})
 
     def test_hip_host_with_its_backend_reports_gpu_available(self):
         # End-to-end: the same host that previously reported a hard error
@@ -590,6 +643,44 @@ class CoreTensorRoleTest(unittest.TestCase):
             "lm_head.weight",
         ]
         self.assertEqual(missing_core_roles(vision_only), ["final norm"])
+
+    def test_deepseek_v4_spells_the_roles_its_own_way(self):
+        """#1593: `embed.weight` and `head.weight` are what deepseek_v4.c looks
+        up, at four call sites. Both roles were reported missing for a container
+        the engine loads and generates from, while model.index, scanning the
+        same tensors, came back green."""
+        # Flat names throughout, which is the shape of that container. The
+        # exact final-norm spelling is not in the issue (the report shows that
+        # role already filled), so this asserts the flat form the other two use.
+        v4 = ["embed.weight", "norm.weight", "head.weight"]
+        self.assertEqual(missing_core_roles(v4), [])
+
+    def test_the_v4_head_companions_do_not_stand_in_for_the_head(self):
+        """`hc_head_base`, `hc_head_fn` and `hc_head_scale` sit beside the real
+        head in the same container. A checkpoint carrying them and no head is
+        missing one."""
+        companions = ["embed.weight", "norm.weight",
+                      "hc_head_base", "hc_head_fn", "hc_head_scale"]
+        self.assertEqual(missing_core_roles(companions), ["output head"])
+
+    def test_a_positional_embedding_does_not_stand_in_for_the_token_embedding(self):
+        """The reason the V4 spellings are matched on the component rather than
+        the tail: "pos_embed.weight".endswith("embed.weight") is True, and so is
+        the vision tower's patch_embed.weight. Accepting either would trade this
+        bug for its mirror image, passing a checkpoint that really has no token
+        embedding."""
+        for stand_in in ("pos_embed.weight", "model.visual.patch_embed.weight"):
+            with self.subTest(name=stand_in):
+                self.assertEqual(
+                    missing_core_roles([stand_in, "model.norm.weight", "lm_head.weight"]),
+                    ["token embedding"])
+
+    def test_a_head_inside_the_layer_stack_is_not_the_output_head(self):
+        """Same rule the final norm already applies: what is under `.layers.`
+        belongs to the block, not to the model."""
+        in_stack = ["model.embed_tokens.weight", "model.norm.weight",
+                    "model.layers.0.mlp.head.weight"]
+        self.assertEqual(missing_core_roles(in_stack), ["output head"])
 
     def test_tied_embeddings_need_no_output_head(self):
         tied = [

@@ -105,6 +105,8 @@
             #    defers to a future `make install` that stages them itself.
             [ -e "$out/lib/colibri/v4_dsml.py" ] || \
               install -m 644 c/v4_dsml.py "$out/lib/colibri/"
+            [ -e "$out/lib/colibri/v41_dsml.py" ] || \
+              install -m 644 c/v41_dsml.py "$out/lib/colibri/"
             [ -e "$out/lib/colibri/tools/iq3xxs_grid.json" ] || \
               install -m 644 c/tools/iq3xxs_grid.json "$out/lib/colibri/tools/"
 
@@ -182,23 +184,34 @@
         devShells.default = pkgs.mkShell {
           inputsFrom = [colibri];
 
-          packages = with pkgs; [
-            pythonEnv
-            gcc
-            gnumake
-            clang-tools # clangd / clang-tidy for IDE support
-            pkg-config
-          ];
+          packages = with pkgs;
+            [
+              pythonEnv
+              gcc
+              gnumake
+              clang-tools # clangd / clang-tidy for IDE support
+              pkg-config
+            ]
+            ++ lib.optionals stdenv.hostPlatform.isLinux [
+              vulkan-loader
+              vulkan-headers
+              vulkan-tools
+              shaderc
+            ];
 
-          shellHook = ''
-            echo "🐦 colibrì dev shell"
-            echo "  gcc: $(gcc --version | head -1)"
-            echo "  python: $(python3 --version)"
-            echo ""
-            echo "Build the engine:   make -C c colibri"
-            echo "Run the converter:  python c/coli convert --model /path/to/glm52_i4"
-            echo "Chat:               COLI_MODEL=/path/to/glm52_i4 ./c/colibri ..."
-          '';
+          shellHook =
+            pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [pkgs.vulkan-loader]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            ''
+            + ''
+              echo "🐦 colibrì dev shell"
+              echo "  gcc: $(gcc --version | head -1)"
+              echo "  python: $(python3 --version)"
+              echo ""
+              echo "Build the engine:   make -C c colibri"
+              echo "Run the converter:  python c/coli convert --model /path/to/glm52_i4"
+              echo "Chat:               COLI_MODEL=/path/to/glm52_i4 ./c/colibri ..."
+            '';
         };
       }
     );

@@ -102,10 +102,11 @@ class V4CliTest(unittest.TestCase):
                     self.cli.cmd_run(args)
             self.assertEqual(stopped.exception.code, 0)
             self.assertEqual(captured["command"], ["/engines/olmoe", "16", "8"])
-            self.assertEqual(captured["input"], "hello world\n")
-            self.assertTrue(captured["text"])
+            self.assertEqual(captured["input"], b"hello world\n")
+            self.assertNotIn("text", captured)
             self.assertEqual(captured["env"]["CHAT"], "1")
             self.assertEqual(captured["env"]["MAX_NEW"], "32")
+            self.assertEqual(captured["env"]["SNAP"], os.path.abspath(str(root)))
         finally:
             directory.cleanup()
 
@@ -114,6 +115,31 @@ class V4CliTest(unittest.TestCase):
         env = self.cli.env_for_engine(args, "deepseek_v4")
         self.assertEqual(env["NGEN"], "8")
         self.assertEqual(env["RAM_GB"], "64")
+        self.assertEqual(env["CTX"], "4096")
+
+    def test_sister_engines_get_snap_from_the_model_flag(self):
+        """#1501 / #1600: `coli run` handed olmoe (and every non-GLM engine) an
+        environment without SNAP, so the engine exited with "started without
+        a model" while chat and serve, which set it elsewhere, worked.
+        SNAP is the model directory, same as env_for() for glm: --model wins
+        over a leftover SNAP in the parent environment."""
+        from family_registry import family_ids
+        for arch in [f for f in family_ids() if f != "glm"]:
+            args = argparse.Namespace(ngen=8, temp=None, ram=0, ctx=None, model="models/demo")
+            env = self.cli.env_for_engine(args, arch)
+            self.assertEqual(env.get("SNAP"), os.path.abspath(args.model), arch)
+        with mock.patch.dict(os.environ, {"SNAP": "/elsewhere"}):
+            args = argparse.Namespace(ngen=8, temp=None, ram=0, ctx=None, model="models/demo")
+            self.assertEqual(
+                self.cli.env_for_engine(args, "olmoe")["SNAP"],
+                os.path.abspath(args.model),
+            )
+
+    def test_v41_ram_flag_overrides_inherited_budget(self):
+        args = argparse.Namespace(ngen=8, temp=None, ram=96, ctx=4096)
+        with mock.patch.dict(os.environ, {"RAM_GB": "32"}):
+            env = self.cli.env_for_engine(args, "deepseek_v41")
+        self.assertEqual(env["RAM_GB"], "96")
         self.assertEqual(env["CTX"], "4096")
 
     def test_kimi_engine_environment_forwards_ram(self):
@@ -132,6 +158,15 @@ class V4CliTest(unittest.TestCase):
         args = argparse.Namespace(ngen=8, temp=0.0, ram=0, ctx=0)
         env = self.cli.env_for_engine(args, "kimi")
         self.assertNotIn("RAM_GB", env)
+
+    def test_qwen_ram_flag_reaches_gateway_planner(self):
+        """Qwen's gateway resolves RAM_GB into its positional expert-cache cap.
+        A launch budget must reach that planner even though the engine itself
+        receives the resolved cap rather than RAM_GB as its cache control."""
+        args = argparse.Namespace(ngen=8, temp=None, ram=6, ctx=0)
+        with mock.patch.dict(os.environ, {"RAM_GB": "12"}, clear=True):
+            env = self.cli.env_for_engine(args, "qwen36")
+        self.assertEqual(env["RAM_GB"], "6")
 
     def test_auto_tier_applies_saved_profile_to_sibling_engine(self):
         """#1196 saved sibling profiles, but only GLM's env_for() loaded them.
@@ -217,6 +252,13 @@ class V4CliTest(unittest.TestCase):
         explicit = argparse.Namespace(ngen=300)
         self.assertEqual(self.cli.ngen_for(explicit), 300)
         self.assertEqual(self.cli.ngen_for(explicit, interactive=True), 300)
+
+    def test_served_sessions_leave_the_ceiling_to_the_context(self):
+        """#382: coli serve, web and chat hand the gateway 0 without --ngen, which it
+        reads as the context the engine holds; a reasoning model's turn is its reasoning
+        plus its answer, and the family's fixed 16384 (8192 for Qwen) cut some short."""
+        self.assertEqual(self.cli.serve_max_tokens(argparse.Namespace(ngen=None)), 0)
+        self.assertEqual(self.cli.serve_max_tokens(argparse.Namespace(ngen=300)), 300)
 
     def test_one_shot_env_still_carries_the_historic_ngen(self):
         """The default moved to None so the two cases can be told apart. These

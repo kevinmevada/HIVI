@@ -54,6 +54,30 @@ class CliOutputLanguageTest(unittest.TestCase):
         self.assertIn("disk", result.stdout)
         self.assertIn("engine", result.stdout)
 
+    def test_info_without_config_names_no_engine(self):
+        """A directory of shards without config.json used to show the GLM engine
+        as if it were the one to run: the family is unknown, so the engine is
+        unknown, and the line must say what to copy where."""
+        with tempfile.TemporaryDirectory() as model:
+            for i in (1, 2):
+                (Path(model) / f"model-0000{i}-of-00002.safetensors").write_bytes(b"\0" * 8)
+            result = self.run_cli("info", "--model", model)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unknown until config.json is present", result.stdout)
+        self.assertIn("2 shard(s) found here", result.stdout)
+        self.assertIn("model.safetensors.index.json", result.stdout)
+        self.assertNotIn("ready", result.stdout)
+        self.assertNotIn("not built", result.stdout)
+
+    def test_chat_without_config_says_what_to_copy(self):
+        with tempfile.TemporaryDirectory() as model:
+            (Path(model) / "tokenizer.json").write_text("{}", encoding="utf-8")
+            result = self.run_cli("run", "--model", model, "hello")
+        self.assertNotEqual(result.returncode, 0)
+        out = result.stdout + result.stderr
+        self.assertIn("cannot read config.json", out)
+        self.assertIn("coli picks the engine from config.json", out)
+
     def test_info_reads_registered_nested_text_config(self):
         with tempfile.TemporaryDirectory() as model:
             (Path(model) / "config.json").write_text(json.dumps({
@@ -242,6 +266,29 @@ class BannerModelLineTest(unittest.TestCase):
                 line = self.line({"model_type": model_type, "n_routed_experts": 8})
                 self.assertTrue(line.startswith(expected), line)
 
+    def test_qwen_checkpoints_are_named_by_geometry(self):
+        """One model_type, two sizes: the banner must not call a 2.4T a 35B (#1045)."""
+        thirty_five = {"model_type": "qwen3_5_moe_text", "num_hidden_layers": 40,
+                       "num_experts": 256, "hidden_size": 2048}
+        two_point_four = {"model_type": "qwen3_5_moe_text", "num_hidden_layers": 92,
+                          "num_experts": 512, "hidden_size": 8192}
+        self.assertTrue(self.line(thirty_five).startswith("Qwen3.6-35B-A3B · 35B MoE"),
+                        self.line(thirty_five))
+        line = self.line(two_point_four)
+        self.assertTrue(line.startswith("Qwen3.8-2.4T-A95B · 2.4T MoE"), line)
+        self.assertNotIn("35B", line)
+        # the HF repo nests the text config under text_config; the family
+        # config, not the root, is what carries the geometry
+        wrapped = {"model_type": "qwen3_5_moe", "text_config": two_point_four}
+        self.assertTrue(self.line(wrapped).startswith("Qwen3.8-2.4T-A95B"), self.line(wrapped))
+        # a geometry the registry does not recognise names itself, with its
+        # own numbers -- a tiny fixture is not "Qwen3.6-35B-A3B"
+        tiny = {"model_type": "qwen3_5_moe_text", "num_hidden_layers": 8,
+                "num_experts": 8, "hidden_size": 64}
+        line = self.line(tiny)
+        self.assertTrue(line.startswith("qwen3_5_moe_text · 8L x 8E MoE"), line)
+        self.assertNotIn("35B", line)
+
     def test_deepseek_v4_is_not_read_as_glm(self):
         """The regression this exists for: a non-GLM checkpoint said GLM-5.2."""
         line = self.line({"model_type": "deepseek_v4", "n_routed_experts": 256})
@@ -250,9 +297,9 @@ class BannerModelLineTest(unittest.TestCase):
 
     def test_unknown_model_states_its_own_type(self):
         """No forcing into the roster: an unknown checkpoint speaks for itself."""
-        line = self.line({"model_type": "qwen3_moe", "num_hidden_layers": 48,
+        line = self.line({"model_type": "mixtral", "num_hidden_layers": 48,
                           "n_routed_experts": 128})
-        self.assertIn("qwen3_moe", line)
+        self.assertIn("mixtral", line)
         self.assertIn("48L x 128E", line)
         self.assertNotIn("GLM", line)
 
@@ -315,8 +362,9 @@ class OmpThreadsForEveryEngineTest(unittest.TestCase):
     """Launchers size shared engines; V4 delegates to its loader-aware runtime.
 
     #805's physical-core default still covers the memory-bound sister engines.
-    DeepSeek V4 instead reserves logical CPUs for its expert-loader workers in
-    v4_omp_reserve_loader_cpus(), unless the operator overrides or disables it.
+    DeepSeek V4 sizes its own team in v4_omp_reserve_loader_cpus() (the physical
+    cores with SMT, the loaders on the siblings; else the logical CPUs less its
+    expert-loader workers), unless the operator overrides or disables it.
     """
 
     @classmethod
@@ -331,7 +379,17 @@ class OmpThreadsForEveryEngineTest(unittest.TestCase):
                                      temp=None, cap=None)
 
     def test_other_engines_get_physical_cores(self):
-        with mock.patch("resource_plan.physical_cpu_count", return_value=6):
+        with mock.patch("resource_plan.physical_cpu_count", return_value=6), \
+             mock.patch("resource_plan.performance_core_count", return_value=None):
+            for arch in ("inkling", "kimi", "olmoe"):
+                with self.subTest(arch=arch):
+                    env = self.coli.env_for_engine(self.args(), arch)
+                    self.assertEqual(env.get("OMP_NUM_THREADS"), "6")
+
+    def test_a_hybrid_cpu_gets_its_performance_cores(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch("resource_plan.physical_cpu_count", return_value=14), \
+             mock.patch("resource_plan.performance_core_count", return_value=6):
             for arch in ("inkling", "kimi", "olmoe"):
                 with self.subTest(arch=arch):
                     env = self.coli.env_for_engine(self.args(), arch)
@@ -368,13 +426,122 @@ class OmpThreadsForEveryEngineTest(unittest.TestCase):
                     "OMP_DYNAMIC", "OMP_PROC_BIND", "OMP_PLACES"):
             self.assertNotIn(key, env)
 
-    def test_qwen38_rejects_gpu_and_vram_flags_before_binary_detection(self):
-        gpu_args = self.args();gpu_args.gpu="0";gpu_args.vram=0
-        with self.assertRaisesRegex(SystemExit, "CPU only.*--gpu"):
-            self.coli.env_for_engine(gpu_args, "qwen38")
-        vram_args = self.args();vram_args.gpu=None;vram_args.vram=4
-        with self.assertRaisesRegex(SystemExit, "CPU only.*--vram"):
-            self.coli.env_for_engine(vram_args, "qwen38")
+    def test_qwen38_gpu_flags_need_the_cuda_build(self):
+        """qwen38 has a GPU path now (expert tier, dense trunk), so --gpu and
+        --vram are no longer refused up front as "CPU only". On a CPU-only
+        binary they fail the way every accelerated engine's do: by asking for
+        the CUDA build. cuda_binary() is mocked so the test does not depend on
+        what happens to be built next to it."""
+        with mock.patch.object(self.coli, "cuda_binary", return_value=None):
+            gpu_args = self.args();gpu_args.gpu="0";gpu_args.vram=0
+            with self.assertRaisesRegex(SystemExit, "--gpu needs the CUDA build"):
+                self.coli.env_for_engine(gpu_args, "qwen38")
+            vram_args = self.args();vram_args.gpu=None;vram_args.vram=4
+            with self.assertRaisesRegex(SystemExit, "--vram needs the CUDA build"):
+                self.coli.env_for_engine(vram_args, "qwen38")
+
+
+class ServerRestartingTest(unittest.TestCase):
+    """#2290: a coli serve whose engine died answers /health 503 "restarting" while it
+    starts the engine again; coli chat waits for that server instead of starting a second."""
+
+    @classmethod
+    def setUpClass(cls):
+        loader = SourceFileLoader("coli_restart_under_test", str(CLI))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.coli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.coli)
+
+    def _health_server(self, code, status):
+        import http.server
+        import threading
+
+        class Health(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"status": status}).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+        server = http.server.HTTPServer(("127.0.0.1", 0), Health)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def test_only_a_503_restarting_counts(self):
+        for code, status, expected in ((503, "restarting", True), (503, "engine_down", False),
+                                       (200, "ok", False)):
+            with self.subTest(code=code, status=status):
+                self.assertIs(self.coli.server_restarting(self._health_server(code, status)),
+                              expected)
+        # nothing listening: no server, not a restarting one
+        import socket
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        self.assertFalse(self.coli.server_restarting(f"http://127.0.0.1:{port}", timeout=0.5))
+
+    def test_chat_waits_for_a_restarting_server_and_attaches(self):
+        coli = self.coli
+
+        class FakeSpinner:
+            def __init__(self, *_a, **_k):
+                pass
+            def start(self):
+                pass
+            def stop(self):
+                pass
+        args = types.SimpleNamespace(model=None, api_key=None, no_attach=False, attach=None)
+        with mock.patch.object(coli, "server_probe", side_effect=[None, None, "flint-colibri"]), \
+             mock.patch.object(coli, "server_restarting", side_effect=[True, True, True]), \
+             mock.patch.object(coli, "server_model_entry", return_value={}), \
+             mock.patch.object(coli, "banner"), \
+             mock.patch.object(coli, "chat_attached") as attached, \
+             mock.patch.object(coli, "Spinner", FakeSpinner), \
+             mock.patch.object(coli.time, "sleep"):
+            coli.cmd_chat(args)
+        attached.assert_called_once_with(args, "http://127.0.0.1:8000", "flint-colibri")
+
+
+class ContextFlagHonestyTest(unittest.TestCase):
+    """#1376: `--ctx` above what a family supports was accepted, then clamped
+    by the engine in silence. A flag that appears to work and does not is
+    worse than one refused with the number."""
+
+    @classmethod
+    def setUpClass(cls):
+        loader = SourceFileLoader("coli_ctx_under_test", str(CLI))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.coli = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.coli)
+
+    class Args(types.SimpleNamespace):
+        """env_for_engine reads whatever flags the family cares about; every
+        one not set here reads as "not given", which is what argparse yields."""
+        def __getattr__(self, name):
+            return None
+
+    def args(self, ctx):
+        return self.Args(ctx=ctx, ram=0)
+
+    def test_ctx_above_the_family_maximum_is_refused_with_the_number(self):
+        family = self.coli.family_by_id("qwen36")
+        too_big = family.limits.max_context + 1
+        with self.assertRaises(SystemExit) as stop:
+            self.coli.env_for_engine(self.args(too_big), "qwen36")
+        self.assertIn(str(family.limits.max_context), str(stop.exception))
+
+    def test_ctx_within_the_maximum_reaches_the_engine_variable(self):
+        family = self.coli.family_by_id("qwen36")
+        env = self.coli.env_for_engine(self.args(65536), "qwen36")
+        self.assertEqual(env.get(family.limits.context_env), "65536")
 
 
 if __name__ == "__main__":

@@ -172,6 +172,7 @@ typedef int             (*fn_tensor_refill_fp4)(Dsv4CudaTensor *t, const uint8_t
 typedef int             (*fn_backend_arch_ok)(int device);
 typedef const char     *(*fn_backend_name)(void);
 typedef long long       (*fn_mem_free_mb)(int device);
+typedef int             (*fn_device_unified)(int device);
 typedef int             (*fn_stream_drain)(int device);
 typedef int             (*fn_kv_ring_append)(int device, int layer, const float *rows,
                                              int start_pos, int count, int window, int dim);
@@ -205,6 +206,8 @@ typedef Dsv4CudaExpertSet *(*fn_expert_set_create)(Dsv4CudaTensor *const *gate, 
                                                    Dsv4CudaTensor *const *down, int count,
                                                    Dsv4CudaTensor *shared_gate, Dsv4CudaTensor *shared_up,
                                                    Dsv4CudaTensor *shared_down);
+typedef int             (*fn_expert_bank_slots)(int experts);
+typedef long long       (*fn_expert_bank_slot_bytes)(int hidden, int intermediate);
 typedef Dsv4CudaExpertSet *(*fn_expert_bank_create)(int count, int hidden, int intermediate, int device,
                                                     Dsv4CudaTensor *shared_gate, Dsv4CudaTensor *shared_up,
                                                     Dsv4CudaTensor *shared_down);
@@ -312,6 +315,7 @@ static struct {
     fn_backend_name backend_name;         /* optional */
     char loaded_name[64];
     fn_mem_free_mb mem_free_mb;
+    fn_device_unified device_unified;     /* optional: older DLLs answer 0 (discrete) */
     fn_stream_drain stream_drain;                /* optional (older DLLs) */
     fn_kv_ring_append kv_ring_append;
     fn_kv_comp_append kv_comp_append;
@@ -324,6 +328,8 @@ static struct {
     fn_moe_activation  moe_activation;
     fn_expert_set_create expert_set_create;
     fn_expert_bank_create expert_bank_create;
+    fn_expert_bank_slots expert_bank_slots; /* optional (older DLLs: 256 only) */
+    fn_expert_bank_slot_bytes expert_bank_slot_bytes; /* optional (older DLLs) */
     fn_expert_bank_upload expert_bank_upload;
     fn_expert_bank_set_shared expert_bank_set_shared;
     fn_expert_bank_upload_tp2 expert_bank_upload_tp2;
@@ -346,14 +352,19 @@ static struct {
  * engine's OWN directory by absolute path — never a bare name — so the
  * dependency search anchors to the trusted install directory and an attacker
  * cannot plant a same-named DLL in the CWD (classic DLL hijacking). */
-static HMODULE dsv4_load_one(const char *name){
+/* *present: whether the file is in the engine's folder at all, so a failure can
+ * say "not in this folder" apart from "a DLL it needs is missing" -- Windows
+ * reports both as error 126 (#2047). */
+static HMODULE dsv4_load_one(const char *name, int *present){
     char dllpath[MAX_PATH];
     HMODULE dll = NULL;
+    *present = 0;
     DWORD mn = GetModuleFileNameA(NULL, dllpath, (DWORD)sizeof(dllpath));
     if(mn > 0 && mn < sizeof(dllpath)){
         char *slash = strrchr(dllpath, '\\');
         if(slash && (size_t)(slash + 1 - dllpath) + strlen(name) + 1 <= sizeof(dllpath)){
             strcpy(slash + 1, name);
+            *present = GetFileAttributesA(dllpath) != INVALID_FILE_ATTRIBUTES;
             dll = LoadLibraryExA(dllpath, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
         }
     }
@@ -374,15 +385,32 @@ static int dsv4_cuda_load(void){
     int n = 0;
     if(forced && *forced) candidates[n++] = forced;
     else { candidates[n++] = DSV4_BACKEND_DLL_DG; candidates[n++] = DSV4_BACKEND_DLL; }
+    /* why each candidate was passed over, for the closing line (#1906: it named no cause) */
+    char why[512]; size_t wn = 0; why[0] = 0;
     for(int i = 0; i < n; i++){
-        g_dsv4.dll = dsv4_load_one(candidates[i]);
-        if(!g_dsv4.dll) continue;
-        if(!dsv4_cuda_resolve(candidates[i])) continue;      /* unloaded inside */
+        int present = 0;
+        g_dsv4.dll = dsv4_load_one(candidates[i], &present);
+        if(!g_dsv4.dll){
+            DWORD err = GetLastError();
+            int w = snprintf(why + wn, sizeof(why) - wn, "%s%s: %s (Windows error %lu)", wn ? "; " : "", candidates[i],
+                             !present ? "not in the engine's folder (the Windows CUDA package carries it)"
+                             : err == ERROR_MOD_NOT_FOUND ? "present, but a DLL it needs is missing (cudart64_12.dll beside it, or the NVIDIA driver's nvcuda.dll)"
+                             : err == ERROR_BAD_EXE_FORMAT ? "not a 64-bit DLL" : "not loadable", (unsigned long)err);
+            if(w > 0 && (size_t)w < sizeof(why) - wn) wn += (size_t)w;
+            continue;
+        }
+        if(!dsv4_cuda_resolve(candidates[i])){                 /* unloaded inside; it said which symbol */
+            int w = snprintf(why + wn, sizeof(why) - wn, "%s%s: a missing symbol", wn ? "; " : "", candidates[i]);
+            if(w > 0 && (size_t)w < sizeof(why) - wn) wn += (size_t)w;
+            continue;
+        }
         /* Optional compatibility probe: a build whose kernels cannot run on
          * device 0 says so, and the next candidate is tried. */
         if(g_dsv4.backend_arch_ok && !g_dsv4.backend_arch_ok(0)){
             fprintf(stderr, DSV4_VENDOR_TAG " %s does not fit this GPU; trying the next backend\n",
                     candidates[i]);
+            int w = snprintf(why + wn, sizeof(why) - wn, "%s%s: not built for this GPU", wn ? "; " : "", candidates[i]);
+            if(w > 0 && (size_t)w < sizeof(why) - wn) wn += (size_t)w;
             FreeLibrary(g_dsv4.dll); g_dsv4.dll = NULL;
             memset(&g_dsv4, 0, sizeof(g_dsv4)); g_dsv4.loaded = 1;
             continue;
@@ -393,8 +421,10 @@ static int dsv4_cuda_load(void){
         g_dsv4.available = 1;
         return 1;
     }
-    fprintf(stderr, DSV4_VENDOR_TAG " no usable backend DLL (" DSV4_BACKEND_DLL_DG " / "
-                    DSV4_BACKEND_DLL "); GPU tier disabled (CPU path remains active).\n");
+    fprintf(stderr, DSV4_VENDOR_TAG " no usable backend DLL (%s); GPU tier disabled (CPU path remains active). "
+                    "The DLLs need an sm_80+ GPU (Ampere or newer); Pascal and Turing take a build with "
+                    "CUDA_ARCH=portable-pre-ampere NO_TC=1 (docs/deepseek-v4.md).\n",
+            wn ? why : DSV4_BACKEND_DLL_DG " / " DSV4_BACKEND_DLL);
     return 0;
 }
 
@@ -492,10 +522,13 @@ static int dsv4_cuda_resolve(const char *dllname){
     _Pragma("GCC diagnostic push")
     _Pragma("GCC diagnostic ignored \"-Wcast-function-type\"")
     g_dsv4.backend_arch_ok = (fn_backend_arch_ok)GetProcAddress(g_dsv4.dll, "dsv4_cuda_backend_arch_ok");
+    g_dsv4.device_unified = (fn_device_unified)GetProcAddress(g_dsv4.dll, "dsv4_cuda_device_unified");
     /* optional: an older DLL without the export keeps the whole tier alive;
      * the engine probes this and simply stays on synchronous attaches. */
     g_dsv4.stream_drain = (fn_stream_drain)GetProcAddress(g_dsv4.dll, "dsv4_cuda_stream_drain");
     g_dsv4.expert_bank_upload_aux = (fn_expert_bank_upload_aux)GetProcAddress(g_dsv4.dll, "dsv4_cuda_expert_bank_upload_aux");
+    g_dsv4.expert_bank_slots = (fn_expert_bank_slots)GetProcAddress(g_dsv4.dll, "dsv4_cuda_expert_bank_slots");
+    g_dsv4.expert_bank_slot_bytes = (fn_expert_bank_slot_bytes)GetProcAddress(g_dsv4.dll, "dsv4_cuda_expert_bank_slot_bytes");
     g_dsv4.backend_name = (fn_backend_name)GetProcAddress(g_dsv4.dll, "dsv4_cuda_backend_name");
     _Pragma("GCC diagnostic pop")
     return 1;
@@ -843,6 +876,11 @@ long long dsv4_cuda_mem_free_mb(int device){
     return g_dsv4.mem_free_mb(device);
 }
 
+int dsv4_cuda_device_unified(int device){
+    if(!g_dsv4.available || !g_dsv4.device_unified) return 0;
+    return g_dsv4.device_unified(device);
+}
+
 int dsv4_cuda_stream_drain(int device){
     /* Without the DLL there is never in-flight DMA to wait for, so a drain
      * trivially succeeds. With an older DLL that lacks the export, report
@@ -919,6 +957,23 @@ Dsv4CudaExpertSet *dsv4_cuda_expert_set_create(Dsv4CudaTensor *const *gate, Dsv4
                                                Dsv4CudaTensor *shared_down){
     if(!g_dsv4.available) return NULL;
     return g_dsv4.expert_set_create(gate, up, down, count, shared_gate, shared_up, shared_down);
+}
+
+int dsv4_cuda_expert_bank_slots(int experts){
+    if(g_dsv4.available && g_dsv4.expert_bank_slots) return g_dsv4.expert_bank_slots(experts);
+    return experts >= 1 && experts <= 256 ? 256 : 0;
+}
+
+long long dsv4_cuda_expert_bank_slot_bytes(int hidden, int intermediate){
+    if(g_dsv4.available && g_dsv4.expert_bank_slot_bytes)
+        return g_dsv4.expert_bank_slot_bytes(hidden, intermediate);
+    /* Older DLL: size the slot like the larger, DeepGEMM flavour (its packed
+     * scale copies double the scale bytes) — the engine only uses this to keep
+     * VRAM free for the bank, so erring high is the safe side. */
+    if(hidden < 1 || intermediate < 1) return 0;
+    long long scales = 2LL * intermediate * (hidden / 32) + (long long)hidden * (intermediate / 32);
+    return (long long)intermediate * hidden + (long long)hidden * (intermediate / 2) + 2 * scales +
+           3 * 2 * (long long)sizeof(void *);
 }
 
 Dsv4CudaExpertSet *dsv4_cuda_expert_bank_create(int count, int hidden, int intermediate, int device,

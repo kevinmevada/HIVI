@@ -9,6 +9,7 @@ from unittest import mock
 
 from family_registry import (
     FAMILIES,
+    DisplayVariant,
     FamilyCapabilities,
     FamilyConfigError,
     FamilyDescriptor,
@@ -18,6 +19,7 @@ from family_registry import (
     UnknownFamilyError,
     PlannerUnsupportedError,
     _build_registry,
+    display_for,
     expert_contributions,
     fixed_resident_contribution,
     family_for_config,
@@ -109,6 +111,10 @@ MINIMAX_M3_FIXTURE = FamilyDescriptor(
 
 
 class FamilyRegistryTest(unittest.TestCase):
+    def test_qwen36_public_metadata_advertises_gateway_tool_support(self):
+        family = next(family for family in FAMILIES if family.id == "qwen36")
+        self.assertTrue(public_metadata(family)["capabilities"]["tools"])
+
     def test_production_descriptors_are_complete_unique_and_serializable(self):
         self.assertGreaterEqual(len(FAMILIES), 5)
         by_id, by_type = _build_registry(FAMILIES)
@@ -119,13 +125,51 @@ class FamilyRegistryTest(unittest.TestCase):
                 json.dumps(public_metadata(family))
                 self.assertIn(family.id, by_id)
 
+    def test_the_wire_capabilities_follow_the_engines_own_submit_contract(self):
+        # `logprobs_echo` is the numeric logprobs/echo channel: the engine emits one ECHO
+        # frame per prompt position it read out, position 0 included. `submit_gbytes` is
+        # the header SHAPE -- the seventh numeric field coli_submit_parse reads, which a
+        # sibling engine's six-field parser would take for a malformed key and answer with
+        # "bad submit extension". Neither is published metadata: they describe the engine
+        # link, not the user surface.
+        by_id, _ = _build_registry(FAMILIES)
+        for family_id, echo, gbytes in (("glm", True, True), ("mimo", True, True),
+                                        ("qwen36", True, False), ("inkling", False, False),
+                                        ("kimi", False, False), ("olmoe", False, False)):
+            with self.subTest(family=family_id):
+                self.assertIs(by_id[family_id].capabilities.logprobs_echo, echo)
+                self.assertIs(by_id[family_id].capabilities.submit_gbytes, gbytes)
+        # The positional flags keep their meaning and both new bits default to off.
+        caps = FamilyCapabilities(True, False, False, True)
+        self.assertFalse(caps.logprobs_echo)
+        self.assertFalse(caps.submit_gbytes)
+
+    def test_capabilities_carry_the_image_bit_for_families_with_an_image_path(self):
+        # The bit says the gateway has a placeholder expansion for the family. Whether
+        # the checkpoint being served actually loaded its tower is the engine's word
+        # (the CAPS handshake line), never the family's: a glm53 export can carry
+        # vision_config and no model.visual.* tensors.
+        by_id, _ = _build_registry(FAMILIES)
+        for family_id, expected in (("glm53", True), ("qwen38", True), ("qwen36", True),
+                                    ("deepseek_v41", True), ("mimo", True),
+                                    ("glm", True),   # Mistral-Large-4's pictures (expand_ml4_images); GLM-5.2's engine says vision=0
+                                    ("kimi", False),
+                                    ("inkling", False), ("olmoe", False),
+                                    ("deepseek_v4", False), ("qwen_image", False)):
+            with self.subTest(family=family_id):
+                self.assertIs(by_id[family_id].capabilities.image, expected)
+                self.assertIs(public_metadata(by_id[family_id])["capabilities"]["image"],
+                              expected)
+        # the four positional flags keep their meaning for every existing caller
+        self.assertFalse(FamilyCapabilities(True, False, False, True).image)
+
     def test_glm53_exposes_engine_kv_slot_limit(self):
         by_id, _ = _build_registry(FAMILIES)
         self.assertEqual(by_id["glm53"].limits.max_kv_slots, 16)
 
     def test_unknown_or_invalid_config_never_falls_back_to_glm(self):
         with self.assertRaises(UnknownFamilyError):
-            family_for_config({"model_type": "qwen3_moe"})
+            family_for_config({"model_type": "mixtral"})
         for config in ({}, {"model_type": ""}, {"model_type": []}, None):
             with self.subTest(config=config), self.assertRaises(FamilyConfigError):
                 family_for_config(config)
@@ -166,8 +210,17 @@ class FamilyRegistryTest(unittest.TestCase):
         self.assertEqual(geometry.configured_experts, 8)
         self.assertEqual(geometry.context_state_bytes, 16_384)
         self.assertEqual(geometry.fixed_state_bytes, 6 * (8 * 8 * 8 + 128 * 3) * 4)
-        for model_type in ("qwen2", "qwen3_moe", "my_qwen_model"):
+        for model_type in ("qwen2", "qwen3_next", "my_qwen_model"):
             self.assertNotIn(model_type, by_type)
+        # the dense Qwen3 is claimed by name (qwen36 runs it, GGUF or converted): every
+        # layer holds KV, nothing is routed
+        self.assertEqual(by_type["qwen3"], by_id["qwen36"])
+        dense = {"model_type": "qwen3", "num_hidden_layers": 4, "num_key_value_heads": 2,
+                 "head_dim": 16, "intermediate_size": 128}
+        resolved = type("R", (), {"descriptor": family, "family_config": dense, "model_dir": "."})()
+        geometry = planner_geometry(resolved, 32)
+        self.assertEqual((geometry.configured_experts, geometry.fixed_state_bytes), (0, 0))
+        self.assertEqual(geometry.context_state_bytes, 4 * 32 * 2 * 16 * 2 * 4)
 
     def test_qwen38_fixture_resolves_nested_text_config_and_sizes_all_state(self):
         config = {
@@ -243,6 +296,18 @@ class FamilyRegistryTest(unittest.TestCase):
         expected_workspace = max(legacy_workspace, batched_workspace)
         self.assertEqual(geometry.workspace_bytes, expected_workspace)
 
+        # serve reads a prompt in segments (q38_serve_prefill): past one segment's rows the
+        # forward's buffers stop growing with the context; the K/V and index rows do not
+        segment = planner_geometry(resolved, 8192)
+        full = planner_geometry(resolved, 262144)
+        self.assertEqual(full.context_state_bytes,
+                         12 * 262144 * (2 * 2 * 256 + 128) * 4 + 262144 * 4)
+        pooled = 4 * (2 * (262144 // 4) - 2 * (8192 // 4))   # the selection's pooled scores
+        self.assertLessEqual(full.workspace_bytes, segment.workspace_bytes + pooled)
+        self.assertLess(full.workspace_bytes, 1_500_000_000)
+        with mock.patch.dict("os.environ", {"COLI_PROMPT_SEGMENT": "2048"}):
+            self.assertLess(planner_geometry(resolved, 262144).workspace_bytes, full.workspace_bytes)
+
         family = resolved.descriptor
         invalid = {
             "ngram_size": 2,
@@ -266,6 +331,56 @@ class FamilyRegistryTest(unittest.TestCase):
                                "model_dir": "."})()
         with self.assertRaisesRegex(ValueError, "max_position_embeddings"):
             planner_geometry(bad, 32)
+
+    def test_qwen38_partial_rotary_above_one_does_not_truncate_into_range(self):
+        # int(256 * 1.001) is 256, so the derived-dimension check never sees
+        # that the factor is larger than the head. The indexer dim is the
+        # head dim too, or the sparse-indexer check would reject it first.
+        text = {
+            "model_type": "qwen4_exp_text",
+            "num_hidden_layers": 48, "hidden_size": 2560, "vocab_size": 248320,
+            "max_position_embeddings": 262144, "eos_token_id": 248044,
+            "num_attention_heads": 24, "num_key_value_heads": 2, "head_dim": 256,
+            "rope_parameters": {"partial_rotary_factor": 1.001},
+            "layer_types": ["linear_attention"] * 36 + ["full_attention"] * 12,
+            "indexer_kv_heads": 1, "indexer_head_dim": 256,
+            "indexer_n_heads": 4, "indexer_budget": 2048, "indexer_compress_ratio": 4,
+            "linear_num_value_heads": 48, "linear_num_key_heads": 16,
+            "linear_key_head_dim": 128, "linear_value_head_dim": 128,
+            "linear_conv_kernel_dim": 4, "hc_count": 4, "hc_lowrank": 320,
+            "ple_layer_ids": [2], "ple_embed_dim": 2560,
+            "ple_conv_kernel_size": 4, "ngram_size": 3,
+            "heads_per_ngram": 8, "split_ngram_parts": 128,
+            "num_experts": 512, "moe_intermediate_size": 640,
+            "num_experts_per_tok": 10, "shared_expert_intermediate_size": 640,
+        }
+        family = _build_registry(FAMILIES)[1]["qwen4_exp_text"]
+        over = type("R", (), {"descriptor": family, "family_config": text, "model_dir": "."})()
+        with self.assertRaisesRegex(ValueError, "partial_rotary_factor"):
+            planner_geometry(over, 32)
+        exact = json.loads(json.dumps(text))
+        exact["rope_parameters"]["partial_rotary_factor"] = 1.0
+        ok = type("R", (), {"descriptor": family, "family_config": exact, "model_dir": "."})()
+        self.assertEqual(planner_geometry(ok, 32).configured_experts, 512)
+
+    def test_qwen38_gguf_directory_is_sized_as_the_file_holds_it(self):
+        # tools/gguf_import.py: resource_plan names each expert's slice of the
+        # fused ggml tensor like a checkpoint expert, dtype "GGUF_<type>"; the
+        # engine keeps the blocks as they are and reads the PLE table by rows.
+        family = next(family for family in FAMILIES if family.id == "qwen38")
+        resolved = type("R", (), {"descriptor": family,
+                                   "family_config": {"num_experts": 512, "hidden_size": 2560,
+                                                     "moe_intermediate_size": 640},
+                                   "model_dir": "."})()
+        self.assertEqual(expert_contributions(
+            resolved, "model.layers.0.mlp.experts.5.down_proj.weight", 921600, "GGUF_IQ4_NL"),
+            ((0, 5, 921600),))
+        self.assertEqual(resident_contribution(
+            resolved, "per_layer_token_embd.weight", 28800138240, "GGUF_IQ4_NL"), 0)
+        self.assertEqual(resident_contribution(
+            resolved, "blk.3.attn_q.weight", 1000, "GGUF_Q8_0"), 1000)
+        self.assertEqual(resident_contribution(
+            resolved, "blk.3.attn_q.weight", 1000, "GGUF_F16"), 2000)
 
     def test_qwen38_inventory_aggregates_per_expert_and_fused_tensor_sizes(self):
         family = next(family for family in FAMILIES if family.id == "qwen38")
@@ -1005,6 +1120,19 @@ class FamilyRegistryTest(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "gateway adapter is not wired"):
                 cli.cmd_chat(args)
 
+        # a family the gateway drives without a one-shot adapter (Qwen3.8, #2189): coli run
+        # goes through the private server coli chat starts
+        resolved = type("R", (), {"descriptor": replace(
+            FAMILIES[0], has_cli_adapter=False, has_gateway_adapter=True)})()
+        with mock.patch.object(cli, "need_model"), \
+             mock.patch.object(cli, "resolve_model", return_value=resolved), \
+             mock.patch.object(cli, "engine_for", return_value="engine"), \
+             mock.patch.object(cli, "banner"), \
+             mock.patch.object(cli, "run_via_gateway") as gateway:
+            cli.cmd_run(args)
+        gateway.assert_called_once()
+        self.assertEqual(gateway.call_args.args[2:], ("engine", "hello"))
+
     def test_tuning_replay_prompts_are_registry_owned(self):
         prompt = "hello {world}"
         expected = {
@@ -1027,6 +1155,17 @@ class FamilyRegistryTest(unittest.TestCase):
                       "<|im_end|>\n<|im_start|>user\nhello {world}<|im_end|>\n"
                       "<|im_start|>assistant\n<think>\n",
             "deepseek_v4": "hello {world}",
+            # V4.1 ships its chat encoding as a Python module (encoding/encoding.py),
+            # not a jinja template, so the replay prompt stays the bare text like V4.
+            "deepseek_v41": "hello {world}",
+            # MiMo-V2.6: render_chat_mimo's cue with thinking on (its template's default)
+            "mimo": "<|im_start|>user\nhello {world}<|im_end|><|im_start|>assistant\n<think>",
+            # An image model has no chat template and nothing to tune; the
+            # template is the identity and `coli tune` refuses the modality.
+            "qwen_image": "hello {world}",
+            # A decision model answers questions; it has no prompt to replay.
+            "laya": "hello {world}",
+            "gliner_decide": "hello {world}",
         }
         self.assertEqual(
             {family.id: tuning_replay_prompt(family, prompt) for family in FAMILIES},
@@ -1053,7 +1192,7 @@ class FamilyRegistryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "config.json").write_text(
-                json.dumps({"model_type": "qwen3_moe"}), encoding="utf-8")
+                json.dumps({"model_type": "mixtral"}), encoding="utf-8")
             (root / "tokenizer.json").write_text("{}", encoding="utf-8")
             report = run_doctor(root, engine_path=root / "colibri",
                                 available_memory=16_000_000_000,
@@ -1469,6 +1608,163 @@ class GlmFamilyNamesBothModelsTest(unittest.TestCase):
                           "a user running one of the two must not read the "
                           "name of the other")
 
+
+
+# Planning keys of Qwen/Qwen3.8-2.4T-A95B, config.json (fetched 2026-09-03).
+# Same model_type as the 35B container, an order of magnitude apart on every
+# size that matters -- the case #1045 is about.
+QWEN38_2P4T_CONFIG = {
+    "model_type": "qwen3_5_moe_text",
+    "num_hidden_layers": 92,
+    "num_experts": 512,
+    "num_experts_per_tok": 10,
+    "hidden_size": 8192,
+    "moe_intermediate_size": 2048,
+    "full_attention_interval": 4,
+    "layer_types": ["full_attention" if i % 4 == 3 else "linear_attention"
+                    for i in range(92)],
+    "num_attention_heads": 64,
+    "num_key_value_heads": 4,
+    "head_dim": 256,
+    "linear_num_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_num_value_heads": 128,
+    "linear_value_head_dim": 128,
+    "linear_conv_kernel_dim": 4,
+    "vocab_size": 248320,
+    "max_position_embeddings": 262144,
+    "mtp_num_hidden_layers": 1,
+}
+
+# The 35B container's flattened text config (what the converter writes).
+QWEN36_35B_CONFIG = {
+    "model_type": "qwen3_5_moe_text",
+    "num_hidden_layers": 40,
+    "num_experts": 256,
+    "num_experts_per_tok": 8,
+    "hidden_size": 2048,
+    "layer_types": ["full_attention" if i % 4 == 3 else "linear_attention"
+                    for i in range(40)],
+    "num_key_value_heads": 2,
+    "head_dim": 256,
+    "linear_num_key_heads": 16,
+    "linear_key_head_dim": 128,
+    "linear_num_value_heads": 32,
+    "linear_value_head_dim": 128,
+    "linear_conv_kernel_dim": 4,
+}
+
+
+class DisplayVariantTest(unittest.TestCase):
+    """One model_type, two checkpoint sizes: the banner must name what is on disk."""
+
+    def _resolve(self, config):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            return resolve_model(root)
+
+    def test_35b_container_keeps_its_name(self):
+        self.assertEqual(display_for(self._resolve(QWEN36_35B_CONFIG)),
+                         ("Qwen3.6-35B-A3B", "35B"))
+
+    def test_2p4t_checkpoint_is_not_announced_as_35b(self):
+        resolved = self._resolve(QWEN38_2P4T_CONFIG)
+        self.assertEqual(resolved.descriptor.id, "qwen36")
+        self.assertEqual(display_for(resolved), ("Qwen3.8-2.4T-A95B", "2.4T"))
+
+    def test_35b_vl_checkpoint_resolves_through_text_config(self):
+        # the HF repo nests the text config; the container flattens it
+        wrapped = {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                   "text_config": QWEN36_35B_CONFIG}
+        self.assertEqual(display_for(self._resolve(wrapped)), ("Qwen3.6-35B-A3B", "35B"))
+
+    def test_unrecognised_geometry_names_itself(self):
+        # a tiny fixture, or a third sibling: no borrowed parameter count
+        tiny = dict(QWEN36_35B_CONFIG, num_hidden_layers=8, num_experts=8, hidden_size=64)
+        self.assertEqual(display_for(self._resolve(tiny)), ("qwen3_5_moe_text", ""))
+        # every key must match, one off is not "close enough"
+        off = dict(QWEN38_2P4T_CONFIG, hidden_size=4096)
+        self.assertEqual(display_for(self._resolve(off)), ("qwen3_5_moe_text", ""))
+
+    def test_families_without_variants_are_unchanged(self):
+        for family in FAMILIES:
+            if family.display_variants:
+                continue
+            resolved = self._resolve({"model_type": family.model_types[0]})
+            self.assertEqual(display_for(resolved), (family.display_name, family.display_scale))
+
+    def test_variants_are_public(self):
+        meta = public_metadata(next(f for f in FAMILIES if f.id == "qwen36"))
+        self.assertEqual([v["display_name"] for v in meta["display_variants"]],
+                         ["Qwen3.6-35B-A3B", "Qwen3.8-2.4T-A95B", "Qwen3.8-27B",
+                          "Qwen3-Coder-30B-A3B", "Qwen3-Coder-REAP-25B-A3B", "Flint",
+                          "Muse-Spark-Open-816B-A42B", "LFM3-VL-2B"])
+        self.assertEqual(meta["display_variants"][3]["geometry"],
+                         {"num_hidden_layers": 48, "num_experts": 128, "hidden_size": 2048})
+        self.assertEqual(meta["display_variants"][2]["geometry"],
+                         {"num_hidden_layers": 64, "hidden_size": 5120, "intermediate_size": 17408})
+        self.assertEqual(meta["display_variants"][1]["geometry"],
+                         {"num_hidden_layers": 92, "num_experts": 512, "hidden_size": 8192})
+        for family in FAMILIES:
+            json.dumps(public_metadata(family))
+
+    def test_registry_refuses_malformed_variants(self):
+        good = DisplayVariant((("num_hidden_layers", 8),), "Qwen3.6", "")
+        for bad in (
+            DisplayVariant((), "Qwen3.6", ""),                       # matches everything
+            DisplayVariant((("num_hidden_layers", 0),), "Qwen3.6", ""),
+            DisplayVariant((("num_hidden_layers", True),), "Qwen3.6", ""),
+            DisplayVariant((("", 8),), "Qwen3.6", ""),
+            DisplayVariant((("num_hidden_layers", 8),), "", ""),
+            "not a variant",
+        ):
+            with self.subTest(bad=bad):
+                with self.assertRaises(RegistryError):
+                    _build_registry((replace(QWEN36_FIXTURE, display_variants=(good, bad)),))
+        # display_name must be one of the variants' names (README contract)
+        with self.assertRaises(RegistryError):
+            _build_registry((replace(QWEN36_FIXTURE, display_variants=(
+                DisplayVariant((("num_hidden_layers", 8),), "Something-Else", ""),)),))
+        _build_registry((replace(QWEN36_FIXTURE, display_variants=(good,)),))
+
+
+class Qwen38_2p4tGeometryTest(unittest.TestCase):
+    """The registered qwen36 planner on the 2.4T config: every guard holds,
+    and the numbers are the ones quoted in #1045."""
+
+    def _resolve(self, config):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            return resolve_model(root)
+
+    def test_planner_geometry_at_8k_and_256k(self):
+        resolved = self._resolve(QWEN38_2P4T_CONFIG)
+        g8 = planner_geometry(resolved, 8192)
+        # 23 attention layers x 8192 x 4 kv heads x 256 x (K+V) x f32 = 1.44 GiB
+        self.assertEqual(g8.context_state_bytes, 23 * 8192 * 4 * 256 * 2 * 4)
+        self.assertAlmostEqual(g8.context_state_bytes / 2**30, 1.4375, places=4)
+        self.assertEqual(g8.configured_experts, 512)
+        # DeltaNet state is context-free: 0.55 GiB at any length
+        g256 = planner_geometry(resolved, 262144)
+        self.assertEqual(g256.fixed_state_bytes, g8.fixed_state_bytes)
+        self.assertAlmostEqual(g256.context_state_bytes / 2**30, 46.0, places=1)
+        self.assertAlmostEqual(g8.fixed_state_bytes / 2**30, 0.55, places=2)
+
+    def test_context_beyond_the_registered_maximum_is_refused(self):
+        resolved = self._resolve(QWEN38_2P4T_CONFIG)
+        with self.assertRaises(ValueError):
+            planner_geometry(resolved, 262144 + 1)
+
+    def test_expert_inventory_sees_the_container_layout(self):
+        # the container stores experts one tensor each; the 2.4T layer/expert
+        # indices are within what the descriptor claims
+        resolved = self._resolve(QWEN38_2P4T_CONFIG)
+        self.assertEqual(expert_contributions(
+            resolved, "model.layers.91.mlp.experts.511.merged_weight", 1234),
+            ((91, 511, 1234),))
+        self.assertEqual(expert_contributions(resolved, "mtp.layers.0.mlp.experts.0.x", 1), ())
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,28 +21,9 @@
 #include "../qwen36.c"
 #undef main
 
+#include "../compat.h"   /* setenv/unsetenv: MinGW has neither */
+
 static int fails = 0;
-
-/* Same pattern as test_omp_tune.c / test_stops.c, and for the same reason:
- * compat.h maps setenv() to SetEnvironmentVariableA, which updates the Win32
- * environment block -- but getenv() reads the CRT's own copy and never sees
- * it, so the value under test would silently not arrive. _putenv_s updates
- * the copy getenv() reads. */
-static void env_set(const char *name, const char *value) {
-#ifdef _WIN32
-    _putenv_s(name, value);
-#else
-    setenv(name, value, 1);
-#endif
-}
-
-static void env_unset(const char *name) {
-#ifdef _WIN32
-    _putenv_s(name, "");
-#else
-    unsetenv(name);
-#endif
-}
 
 static void ck(int cond, const char *what) {
     if (cond) { printf("  ok   %s\n", what); return; }
@@ -91,7 +72,9 @@ static void case_layout(void) {
     for (int i = 0; i < m.c.n_layers; i++) {
         if (!m.c.is_attn[i]) continue;
         int64_t last = (int64_t)m.c.kv_heads * m.max_t * m.c.k_head_dim - 1;
-        m.K[i][last] = 1.f; m.V[i][last] = 2.f;
+        /* the element's last byte: q36_kv_es() bytes an element (float16 or float) */
+        size_t end = (size_t)(last + 1) * q36_kv_es() - 1;
+        ((unsigned char *)m.K[i])[end] = 1; ((unsigned char *)m.V[i])[end] = 2;
     }
     ck(1, "last element of every cache is writable");
 }
@@ -102,15 +85,21 @@ static void case_growth(void) {
     printf("growth across requests\n");
 
     m.max_t = 512;  ensure_kv(&m);
-    float *first = m.K[3];
+    void *first = m.K[3];
+    const int cap = m.kv_cap;
+    ck(cap >= 512 && cap % 256 == 0, "the first request's cache holds it, with room for a longer next turn");
     m.max_t = 256;  ensure_kv(&m);
-    ck(m.K[3] == first && m.kv_cap == 512,
+    ck(m.K[3] == first && m.kv_cap == cap,
        "a shorter request leaves the cache alone (never shrinks)");
+    m.max_t = cap;  ensure_kv(&m);
+    ck(m.K[3] == first && m.kv_cap == cap, "a request up to the capacity reallocates nothing");
+    m.max_t = cap + 1; ensure_kv(&m);
+    ck(m.kv_cap >= cap + cap / 2, "growth is by half again at least, not to the request (a chat grows every turn)");
 
     m.max_t = 2048; ensure_kv(&m);
-    ck(m.kv_cap == 2048, "a longer request grows the cache");
+    ck(m.kv_cap >= 2048, "a longer request grows the cache");
     int64_t last = (int64_t)m.c.kv_heads * m.max_t * m.c.k_head_dim - 1;
-    m.K[3][last] = 1.f;    /* the re-allocation must be sized to the NEW max_t */
+    ((unsigned char *)m.K[3])[(size_t)(last + 1) * q36_kv_es() - 1] = 1;   /* the re-allocation must be sized to the NEW max_t */
     ck(1, "the grown cache is writable to its last element");
 }
 
@@ -134,20 +123,59 @@ static void case_ceiling(void) {
     ck(1, "every thread's score row holds max_t entries");
 
     /* Q36_MAXT may lower the ceiling but never raise it past the capacity. */
-    env_set("Q36_MAXT", "999999999");
+    setenv("Q36_MAXT", "999999999", 1);
     ck(qwen36_max_ctx() == QWEN36_ATTN_MAX_CTX,
        "Q36_MAXT cannot be raised past the capacity");
-    env_set("Q36_MAXT", "4096");
+    setenv("Q36_MAXT", "4096", 1);
     ck(qwen36_max_ctx() == 4096, "Q36_MAXT can lower the ceiling");
-    env_unset("Q36_MAXT");
+    unsetenv("Q36_MAXT");
     ck(qwen36_max_ctx() == QWEN36_DEFAULT_MAX_CTX,
        "unset Q36_MAXT falls back to the conservative default");
+}
+
+/* #1641: max_tokens is a ceiling, not a target. The gateway's default budget
+ * (8192, the whole default context) used to be refused on every request
+ * without max_tokens and on every `coli chat` message; now it is clamped to
+ * the room the context leaves, and only a prompt that does not fit is refused.
+ * A read-only logprobs request (max_tokens 0) may fill the context exactly. */
+static void case_budget(void) {
+    ck(qwen36_serve_budget(2, 8192, 8192, 0) == 8190, "default budget clamped to the room left by the prompt");
+    ck(qwen36_serve_budget(100, 50, 8192, 0) == 50, "a budget that fits is untouched");
+    ck(qwen36_serve_budget(8191, 1, 8192, 0) == 1, "one token of room is enough");
+    ck(qwen36_serve_budget(8192, 1, 8192, 0) == -1, "a prompt that leaves no room is refused");
+    ck(qwen36_serve_budget(9000, 1, 8192, 0) == -1, "a prompt longer than the context is refused");
+    ck(qwen36_serve_budget(0, 1, 8192, 0) == -1, "an empty prompt is refused");
+    ck(qwen36_serve_budget(8192, 0, 8192, 1) == 0, "read-only: the prompt may fill the context");
+    ck(qwen36_serve_budget(8193, 0, 8192, 1) == -1, "read-only: past the context is still refused");
+}
+
+/* #2492: a token's bytes past the 16th were cut before its codepoints were taken, and a
+ * Cyrillic word is often a longer token than that */
+static void case_utf8(void) {
+    printf("utf-8 of long tokens\n");
+    const char *tok = " удовольствием";   /* 27 bytes, one token of Qwen3.6's vocabulary */
+    unsigned char buf[16], out[256]; int bn = 0, on = 0;
+    int got = utf8_drain(buf, &bn, (const unsigned char *)tok, (int)strlen(tok), out, &on);
+    ck(got == (int)strlen(tok) && on == got && memcmp(out, tok, (size_t)got) == 0 && bn == 0,
+       "a 27-byte token comes out whole");
+    /* a codepoint split across two tokens still waits for its last byte */
+    const unsigned char a[] = {0xD1, 0x8D, 0xD0}, b2[] = {0xBA, 'x'};   /* "э" then "к" across the boundary */
+    bn = 0; utf8_drain(buf, &bn, a, 3, out, &on);
+    ck(on == 2 && bn == 1, "a codepoint's first byte waits for the next token");
+    utf8_drain(buf, &bn, b2, 2, out, &on);
+    ck(on == 3 && out[0] == 0xD0 && out[1] == 0xBA && out[2] == 'x' && bn == 0, "and comes out with it");
+    /* 40 bytes of two-byte codepoints: none lost */
+    unsigned char lng[40]; for (int i = 0; i < 40; i += 2) { lng[i] = 0xD0; lng[i + 1] = 0xB0; }
+    bn = 0; utf8_drain(buf, &bn, lng, 40, out, &on);
+    ck(on == 40 && memcmp(out, lng, 40) == 0, "a 40-byte token loses nothing");
 }
 
 int main(void) {
     case_layout();
     case_growth();
+    case_utf8();
     case_ceiling();
+    case_budget();
     if (fails) { printf("FAILED %d\n", fails); return 1; }
     printf("OK test_qwen36_ctx\n");
     return 0;

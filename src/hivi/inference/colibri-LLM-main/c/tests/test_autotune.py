@@ -108,8 +108,28 @@ class AutotuneUnitTest(unittest.TestCase):
                 steps = dict(candidate_steps(plan, {}, arch))
                 self.assertNotIn("direct-on", steps)
                 self.assertNotIn("io-pipe-on", steps)
-                # OMP and NUMA are engine-agnostic and must survive, or the
-                # sweep has nothing left to measure on those engines.
+                # OMP is engine-agnostic and must survive, or the sweep has
+                # nothing left to measure on those engines.
+                self.assertTrue(any(name.startswith("omp-") for name in steps), steps)
+
+    def test_cuda_and_numa_knobs_are_not_swept_on_other_engines(self):
+        """COLI_CUDA_PIPE and COLI_NUMA are read by colibri.c alone, and
+        COLI_CUDA_ASYNC only on the grouped-expert CUDA call colibri.c makes.
+        A GPU or a second socket in the plan offered them to every engine, so
+        a sibling tune measured identical runs and could accept timing noise
+        as a gain."""
+        gpu_plan = plan(sockets=2, gpu=True)
+        glm = dict(candidate_steps(gpu_plan, {}, "glm"))
+        for name in ("numa-on", "cuda-pipe-1", "cuda-pipe-2", "cuda-sync"):
+            self.assertIn(name, glm)
+        for arch in ("glm53", "deepseek_v4", "deepseek_v41", "kimi", "inkling",
+                     "olmoe", "qwen36", "qwen38"):
+            with self.subTest(arch=arch):
+                steps = dict(candidate_steps(gpu_plan, {}, arch))
+                self.assertFalse(any(name.startswith(("cuda-", "numa-"))
+                                     for name in steps), steps)
+                self.assertFalse({"COLI_CUDA_PIPE", "COLI_CUDA_ASYNC", "COLI_NUMA"}
+                                 & {key for change in steps.values() for key in change})
                 self.assertTrue(any(name.startswith("omp-") for name in steps), steps)
 
     def test_v4_loader_lanes_are_bounded_and_only_swept_when_disk_is_cold(self):
@@ -332,6 +352,19 @@ class ServeTuneTest(unittest.TestCase):
         self.assertEqual(FakeServeEngine.sessions,
                          [["prompt-a", "prompt-b"]] * 4)
 
+    def test_sibling_tune_with_a_gpu_and_two_sockets_launches_only_omp(self):
+        FakeServeEngine.reset()
+        p = plan(cores=8, sockets=2, gpu=True)
+        p["tiers"]["ram"] = {"cache_slots_per_layer": 16}
+        profile, _ = self.run_serve_tune(arch="qwen36", plan=p,
+                                         prompts=("prompt-a", "prompt-b"))
+        names = [candidate["name"] for candidate in profile["candidates"]]
+        self.assertEqual(names, ["baseline", "omp-4"])
+        for launch in FakeServeEngine.launches:
+            for key in ("COLI_CUDA_PIPE", "COLI_CUDA_ASYNC", "COLI_NUMA"):
+                self.assertNotIn(key, launch["env"])
+        self.assertEqual(len(FakeServeEngine.launches), 4)
+
     def test_candidate_that_changes_output_is_disqualified(self):
         FakeServeEngine.reset(drift_on="OMP_NUM_THREADS")
         profile, _ = self.run_serve_tune()
@@ -397,6 +430,28 @@ class ServeTuneTest(unittest.TestCase):
                 self.assertFalse(profile["accepted"])
                 self.assertEqual(profile["winner"]["cap"], 16)
 
+    def test_progress_names_the_cache_each_measurement_launches_with(self):
+        # The progress line used to print the baseline cap for every measurement,
+        # so cache-75 read "cap=16" while its engine ran with 12 slots.
+        FakeServeEngine.reset(cap_speeds={16: 1.0, 12: 1.30, 8: 1.10})
+        p = plan(cores=8, gpu=False, cold=1 << 30)
+        p["tiers"]["ram"] = {
+            "budget_bytes": 24 * (1024 ** 3),
+            "expert_cache_bytes": 16 * (1024 ** 3),
+            "cache_slots_per_layer": 16,
+        }
+        messages = []
+        self.run_serve_tune(
+            arch="inkling", plan=p,
+            base_env={"COLI_NO_OMP_TUNE": "1"},
+            repeats=2, prompts=("prompt-a", "prompt-b"),
+            progress=messages.append,
+        )
+        labels = {message.split(" (")[0] for message in messages if " cap=" in message}
+        self.assertEqual(labels, {
+            "baseline cap=16", "cache-75 cap=12", "cache-50 cap=8",
+            "confirm-winner cap=12", "confirm-baseline cap=16",
+        })
 
 class AutotuneIntegrationTest(unittest.TestCase):
     def test_unset_cap_resolves_from_the_plan_not_str_none(self):

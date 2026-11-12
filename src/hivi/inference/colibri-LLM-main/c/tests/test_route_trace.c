@@ -9,9 +9,23 @@
  * easy to break by "tidying" the header into a comment line or moving the engine hash
  * into the second field, so it is asserted here against a literal copy of that loop.
  *
- * This test includes route_trace.h and nothing else: no Model, no Cfg, no st.h. That is
- * the point of the header — any engine can use it — and compiling this file proves it. */
+ * This test includes route_trace.h (plus compat.h) and nothing else: no Model, no Cfg, no st.h.
+ * That is the point of the header — any engine can use it — and compiling this file proves it. */
+#include <stdio.h>
+#include <errno.h>
+
+/* Simulate a delayed buffered-write failure reported when closing a stream. */
+static int fail_history_close;
+static int history_test_fclose(FILE *f){
+    int rc = fclose(f);
+    if(fail_history_close){ errno = ENOSPC; return EOF; }
+    return rc;
+}
+#define fclose history_test_fclose
 #include "../route_trace.h"
+#undef fclose
+
+#include "../compat.h"   /* setenv/unsetenv: MinGW has neither */
 
 static int g_nfails = 0;
 static void check(int cond, const char *what){
@@ -308,26 +322,30 @@ int main(void){
      * staying frozen. Enforced in rt_save itself so every engine gets it. */
     {
         rt_counts(3)[4] = 99;
-#ifdef _WIN32
-        _putenv_s("USAGE_SAVE", "0");
-#else
         setenv("USAGE_SAVE", "0", 1);
-#endif
         long before = fsize(TMP);
         check(rt_save(TMP, 1) == 1, "USAGE_SAVE=0: a requested skip is not a failure");
         check(fsize(TMP) == before, "USAGE_SAVE=0: the history file is not rewritten");
-#ifdef _WIN32
-        _putenv_s("USAGE_SAVE", "1");
-#else
         setenv("USAGE_SAVE", "1", 1);
-#endif
         check(rt_save(TMP, 1) == 1, "USAGE_SAVE=1: saving works again");
         check(fsize(TMP) != before, "USAGE_SAVE=1: the new counter reaches the file");
-#ifdef _WIN32
-        _putenv_s("USAGE_SAVE", "");
-#else
         unsetenv("USAGE_SAVE");
-#endif
+    }
+
+    /* A failed close must not publish a partial temp file over good history. */
+    {
+        FILE *f = fopen(TMP, "w");
+        fprintf(f, "previous history\n");
+        fclose(f);
+        fail_history_close = 1;
+        check(rt_save(TMP, 1) == 0, "a delayed write failure is reported");
+        fail_history_close = 0;
+        char buf[64] = {0};
+        f = fopen(TMP, "r");
+        if(f){ (void)fread(buf, 1, sizeof(buf)-1, f); fclose(f); }
+        check(strcmp(buf, "previous history\n") == 0,
+              "failed save preserves the previous history");
+        check(rt_save(TMP, 1) == 1, "save recovers after a delayed write failure");
     }
 
     remove(TMP);

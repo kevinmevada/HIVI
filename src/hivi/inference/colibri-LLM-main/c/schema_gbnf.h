@@ -26,6 +26,7 @@
  */
 #ifndef SCHEMA_GBNF_H
 #define SCHEMA_GBNF_H
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,9 +34,13 @@
 
 #define SGB_MAX_DEPTH 32
 
+/* an array item that holds an array, compiled once as rule jitem<id> after root */
+typedef struct { jval *sc; int depth; } SgbItemRule;
+
 typedef struct {
     char  *s; size_t len, cap;      /* output GBNF text */
     int    nrule;                   /* next composite rule id */
+    SgbItemRule *items; int items_cap;  /* composite rule bodies, indexed by id */
     int    use_str, use_num, use_int;  /* shared terminal rules actually referenced */
     char   err[160];
     int    fail;
@@ -67,7 +72,14 @@ static void sgb_put_json_string_lit(SgbCtx *C, const char *raw){
         unsigned char c = *p;
         if (c == '"')       sgb_put(C, "\\\\\\\"");   /* JSON \"  inside GBNF literal */
         else if (c == '\\') sgb_put(C, "\\\\\\\\");
-        else if (c < 0x20){ snprintf(b, sizeof b, "\\x%02x", c); sgb_put(C, b); } /* raw ctl byte (invalid JSON anyway) */
+        else if (c < 0x20){
+            /* json.h already decoded the schema string. Escape the control
+             * for JSON first, then escape that backslash for the GBNF literal. */
+            const char *short_escape = c == '\b' ? "\\\\b" : c == '\f' ? "\\\\f"
+                : c == '\n' ? "\\\\n" : c == '\r' ? "\\\\r" : c == '\t' ? "\\\\t" : NULL;
+            if (short_escape) sgb_put(C, short_escape);
+            else { snprintf(b, sizeof b, "\\\\u%04x", c); sgb_put(C, b); }
+        }
         else if (c == 0x7f) sgb_put(C, "\\x7f");
         else { b[0] = (char)c; b[1] = 0; sgb_put(C, b); }
     }
@@ -76,9 +88,19 @@ static void sgb_put_json_string_lit(SgbCtx *C, const char *raw){
 
 /* emit a number the way a model would print it: shortest round-trip via %g */
 static void sgb_put_number_lit(SgbCtx *C, double d){
+    /* 1e9999 parses as inf. %.17g then writes the literal inf, which is not JSON. */
+    if (!isfinite(d)){ sgb_fail(C, "non-finite number"); return; }
     char b[64]; snprintf(b, sizeof b, "\"%.17g\"", d);
-    /* trim %.17g noise for integers */
-    if (d == (double)(long long)d && d < 1e15 && d > -1e15)
+    /* %.17g writes 0.1 as 0.10000000000000001: a fraction takes the fewest
+     * digits that read back as the same double, the text a model writes. */
+    if (d < 9007199254740992.0 && d > -9007199254740992.0 && d != (double)(long long)d)
+        for (int prec = 15; prec < 17; prec++){
+            char t[64]; snprintf(t, sizeof t, "\"%.*g\"", prec, d);
+            if (strtod(t + 1, NULL) == d){ memcpy(b, t, sizeof b); break; }
+        }
+    /* Check the formatting range before converting: finite schema numbers
+     * outside it need not be representable as long long. */
+    if (d < 1e15 && d > -1e15 && d == (double)(long long)d)
         snprintf(b, sizeof b, "\"%lld\"", (long long)d);
     sgb_put(C, b);
 }
@@ -142,23 +164,65 @@ static void sgb_object(SgbCtx *C, jval *sc, int depth){
     sgb_put(C, " \"}\"");
 }
 
+/* true when a schema node is an array, or an object with an array below it */
+static int sgb_has_array(jval *sc, int depth){
+    if (!sc || sc->t != J_OBJ || depth > SGB_MAX_DEPTH) return 0;
+    jval *ty = json_get(sc, "type");
+    if (!ty || ty->t != J_STR) return 0;
+    if (!strcmp(ty->str, "array")) return 1;
+    jval *props = json_get(sc, "properties");
+    if (strcmp(ty->str, "object") || !props || props->t != J_OBJ) return 0;
+    for (int i = 0; i < props->len; i++)
+        if (sgb_has_array(props->kids[i], depth + 1)) return 1;
+    return 0;
+}
+
+static void sgb_item(SgbCtx *C, jval *items, int depth, const char *rule){
+    if (rule[0]) sgb_put(C, rule); else sgb_value(C, items, depth);
+}
+
+/* An array names its item grammar twice (the first item, then each ","-item).
+ * Inlining an item that holds an array at both places doubled everything below
+ * it at every nesting level: 2^depth copies of the innermost item. Such an item
+ * is queued as one composite rule, emitted after the root rule, and referenced
+ * by name. Any other item is inlined as before and costs no extra rule. */
 static void sgb_array(SgbCtx *C, jval *sc, int depth){
     jval *items = json_get(sc, "items");
     jval *mi    = json_get(sc, "minItems");
-    int min1 = mi && mi->t == J_NUM && mi->num >= 1;
-    if (mi && mi->t == J_NUM && mi->num > 1){ sgb_fail(C, "minItems > 1"); return; }
+    /* Only the integers 0 and 1 are implemented. 0.5 and -1 used to fall
+     * through as "zero or more", and true is a bool that is not a number. */
+    int min1 = 0;
+    if (mi){
+        if (mi->t != J_NUM || !isfinite(mi->num) || mi->num != floor(mi->num) ||
+            mi->num < 0.0 || mi->num > 1.0){
+            sgb_fail(C, "minItems must be 0 or 1"); return;
+        }
+        min1 = mi->num == 1.0;
+    }
     if (!items){ sgb_fail(C, "array without items"); return; }
+    char rule[32] = "";
+    if (sgb_has_array(items, depth + 1)){
+        if (C->nrule == C->items_cap){
+            int nc = C->items_cap ? C->items_cap * 2 : 8;
+            SgbItemRule *ni = (SgbItemRule *)realloc(C->items, (size_t)nc * sizeof *ni);
+            if (!ni){ C->fail = 1; return; }
+            C->items = ni; C->items_cap = nc;
+        }
+        C->items[C->nrule].sc = items;
+        C->items[C->nrule].depth = depth + 1;
+        snprintf(rule, sizeof rule, "jitem%d", C->nrule++);
+    }
     if (min1){
         sgb_put(C, "\"[\" jws ");
-        sgb_value(C, items, depth + 1);
+        sgb_item(C, items, depth + 1, rule);
         sgb_put(C, " jws ( \",\" jws ");
-        sgb_value(C, items, depth + 1);
+        sgb_item(C, items, depth + 1, rule);
         sgb_put(C, " jws )* \"]\"");
     } else {
         sgb_put(C, "\"[\" jws ( ");
-        sgb_value(C, items, depth + 1);
+        sgb_item(C, items, depth + 1, rule);
         sgb_put(C, " jws ( \",\" jws ");
-        sgb_value(C, items, depth + 1);
+        sgb_item(C, items, depth + 1, rule);
         sgb_put(C, " jws )* )? \"]\"");
     }
 }
@@ -225,6 +289,15 @@ static char *schema_to_gbnf(const char *schema_json, char *err, int errsz){
     sgb_put(&C, "root ::= jws ");
     sgb_value(&C, sc, 0);
     sgb_put(&C, " jws\n");
+    /* item rules queued by sgb_array; compiling one can queue the next (a deeper
+     * array), so nrule grows while this loop runs */
+    for (int i = 0; i < C.nrule && !C.fail; i++){
+        char head[40]; snprintf(head, sizeof head, "jitem%d ::= ", i);
+        sgb_put(&C, head);
+        sgb_value(&C, C.items[i].sc, C.items[i].depth);
+        sgb_put(&C, "\n");
+    }
+    free(C.items);
     sgb_put(&C, "jws ::= ( \" \" | \"\\t\" | \"\\n\" | \"\\r\" )*\n");
     if (C.use_str)
         sgb_put(&C, "jstr ::= \"\\\"\" jchar* \"\\\"\"\n"

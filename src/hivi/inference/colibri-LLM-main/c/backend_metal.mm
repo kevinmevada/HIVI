@@ -150,8 +150,111 @@ kernel void mm_gemv(device const uchar* w      [[buffer(0)]],   // raw weight by
   }
   acc = simd_sum(acc);
   // fmt==4 (per-group) and fmt==8 (per-block) already folded their scale into acc
-  // above -- do not scale again.
-  if (slane == 0) y[row] = (fmt == 4 || fmt == 8) ? acc : acc * scale[o];
+  // above -- do not scale again. fmt==0 is raw f32 and has NO scale array (see
+  // fmt_scale_bytes): its `scale` binding is a nil buffer, so reading scale[o] here
+  // yielded 0 and zeroed the whole result. Only fmt 1/2/3 carry a per-row scale.
+  if (slane == 0) y[row] = (fmt == 0 || fmt == 4 || fmt == 8) ? acc : acc * scale[o];
+}
+
+// MLX affine packed GEMV, adapted from Swiftlet's gemv_affine_fast Q4/Q8
+// kernels (Apache-2.0, commit b3a04676748c7597800c5bcc8b80a32508f9f43d).
+// Modified here for Colibri's batched standalone API and checked descriptor.
+// This is a separate representation from mm_gemv fmt=4: q is unsigned and
+// every group reconstructs weights as scale*q + bias.
+struct AffineGemvParams {
+  uint output_dim;
+  uint input_dim;
+  uint group_size;
+  uint scalar_format;       // ColiAffineScalarFormat: 0=f32, 1=f16, 2=bf16
+  uint batch;
+};
+
+inline uint affine_load_u32(device const uchar *p, ulong offset) {
+  return uint(p[offset]) | (uint(p[offset+1]) << 8) |
+         (uint(p[offset+2]) << 16) | (uint(p[offset+3]) << 24);
+}
+
+inline float affine_load_scalar(device const uchar *p, uint index, uint format) {
+  if (format == 0) return as_type<float>(affine_load_u32(p, ulong(index)*4));
+  ulong offset = ulong(index)*2;
+  ushort value = ushort(p[offset]) | (ushort(p[offset+1]) << 8);
+  if (format == 1) return float(as_type<half>(value));
+  return as_type<float>(uint(value) << 16);
+}
+
+kernel void mm_affine_q4(device const float *x [[buffer(0)]],
+                         device const uchar *weights [[buffer(1)]],
+                         device const uchar *scales [[buffer(2)]],
+                         device const uchar *biases [[buffer(3)]],
+                         device float *y [[buffer(4)]],
+                         constant AffineGemvParams &p [[buffer(5)]],
+                         uint2 position [[thread_position_in_grid]],
+                         uint lane [[thread_index_in_simdgroup]]) {
+  uint flat_row=position.y, total=p.batch*p.output_dim;
+  if (flat_row >= total) return;
+  uint sample=flat_row/p.output_dim, row=flat_row%p.output_dim;
+  uint packed_cols=p.input_dim/8, groups=p.input_dim/p.group_size;
+  uint words_per_group=p.group_size/8;
+  device const uint *wr=(device const uint*)(weights + ulong(row)*packed_cols*4);
+  float acc=0.f;
+  for (uint group=lane; group<groups; group+=32) {
+    float qdot=0.f, xsum=0.f;
+    uint word_base=group*words_per_group;
+    uint xbase=sample*p.input_dim + group*p.group_size;
+    for (uint wi=0; wi<words_per_group; wi++) {
+      uint word=wr[word_base+wi], xo=xbase+wi*8;
+      qdot += float(word & 0xFu)*x[xo]
+            + float((word >> 4) & 0xFu)*x[xo+1]
+            + float((word >> 8) & 0xFu)*x[xo+2]
+            + float((word >> 12) & 0xFu)*x[xo+3]
+            + float((word >> 16) & 0xFu)*x[xo+4]
+            + float((word >> 20) & 0xFu)*x[xo+5]
+            + float((word >> 24) & 0xFu)*x[xo+6]
+            + float((word >> 28) & 0xFu)*x[xo+7];
+      xsum += x[xo]+x[xo+1]+x[xo+2]+x[xo+3]
+            + x[xo+4]+x[xo+5]+x[xo+6]+x[xo+7];
+    }
+    uint scalar_index=row*groups+group;
+    acc += affine_load_scalar(scales,scalar_index,p.scalar_format)*qdot
+         + affine_load_scalar(biases,scalar_index,p.scalar_format)*xsum;
+  }
+  acc=simd_sum(acc);
+  if (lane == 0) y[flat_row]=acc;
+}
+
+kernel void mm_affine_q8(device const float *x [[buffer(0)]],
+                         device const uchar *weights [[buffer(1)]],
+                         device const uchar *scales [[buffer(2)]],
+                         device const uchar *biases [[buffer(3)]],
+                         device float *y [[buffer(4)]],
+                         constant AffineGemvParams &p [[buffer(5)]],
+                         uint2 position [[thread_position_in_grid]],
+                         uint lane [[thread_index_in_simdgroup]]) {
+  uint flat_row=position.y, total=p.batch*p.output_dim;
+  if (flat_row >= total) return;
+  uint sample=flat_row/p.output_dim, row=flat_row%p.output_dim;
+  uint packed_cols=p.input_dim/4, groups=p.input_dim/p.group_size;
+  uint words_per_group=p.group_size/4;
+  device const uint *wr=(device const uint*)(weights + ulong(row)*packed_cols*4);
+  float acc=0.f;
+  for (uint group=lane; group<groups; group+=32) {
+    float qdot=0.f, xsum=0.f;
+    uint word_base=group*words_per_group;
+    uint xbase=sample*p.input_dim + group*p.group_size;
+    for (uint wi=0; wi<words_per_group; wi++) {
+      uint word=wr[word_base+wi], xo=xbase+wi*4;
+      qdot += float(word & 0xFFu)*x[xo]
+            + float((word >> 8) & 0xFFu)*x[xo+1]
+            + float((word >> 16) & 0xFFu)*x[xo+2]
+            + float((word >> 24) & 0xFFu)*x[xo+3];
+      xsum += x[xo]+x[xo+1]+x[xo+2]+x[xo+3];
+    }
+    uint scalar_index=row*groups+group;
+    acc += affine_load_scalar(scales,scalar_index,p.scalar_format)*qdot
+         + affine_load_scalar(biases,scalar_index,p.scalar_format)*xsum;
+  }
+  acc=simd_sum(acc);
+  if (lane == 0) y[flat_row]=acc;
 }
 
 // Batched bindless expert GEMV: each row gr belongs to expert erow[gr], whose weight and
@@ -261,6 +364,13 @@ kernel void moe_fwht(device float* v [[buffer(0)]], device const uchar* signs [[
 }
 kernel void moe_silu(device float* g [[buffer(0)]], device const float* u [[buffer(1)]],
                      uint i [[thread_position_in_grid]]) { float v=g[i]; g[i]=(v/(1.0f+exp(-v)))*u[i]; }
+kernel void moe_silu_clamped(device float* g [[buffer(0)]], device const float* u [[buffer(1)]],
+                             constant float& limit [[buffer(2)]],
+                             uint i [[thread_position_in_grid]]) {
+  float v=min(g[i], limit);
+  float uv=clamp(u[i], -limit, limit);
+  g[i]=(v/(1.0f+exp(-v)))*uv;
+}
 
 // ===== Fused decode attention (GLM-5.2 dims, S=1) =====
 constant int A_HID=6144, A_H=64, A_QLORA=2048, A_KVL=512, A_NOPE=192, A_ROPE=64, A_VH=256;
@@ -578,17 +688,109 @@ kernel void kda_state(
   }
   oh[hq + i] = oi;
 }
+
+// ---- training kernels (QLoRA, M6): correctness-first, unfused ----
+// t_tmul: dx[s,i] += sum_o dequant(W[o,i])*scale[o]*dy[s,o] — the frozen-base
+// transpose multiply of backward. One thread per (s,i): adjacent threads read
+// adjacent weight bytes for each o (coalesced); never materializes dequant(W).
+kernel void t_tmul(device const uchar* w      [[buffer(0)]],
+                   device const float* scale  [[buffer(1)]],
+                   device const float* dy     [[buffer(2)]],   // [S,O]
+                   device float*       dx     [[buffer(3)]],   // [S,I] accumulate
+                   constant int& S [[buffer(4)]], constant int& I [[buffer(5)]],
+                   constant int& O [[buffer(6)]], constant int& fmt [[buffer(7)]],
+                   constant int& gs [[buffer(8)]],             // fmt=4 group size
+                   uint gid [[thread_position_in_grid]]) {
+  if (gid >= (uint)(S*I)) return;
+  int i = gid % I, s = gid / I;
+  device const float* dyr = dy + (long)s*O;
+  float acc = 0.0f;
+  if (fmt == 1) {                                   // int8
+    device const char* wc = (device const char*)w;
+    for (int o = 0; o < O; o++) acc += float(wc[(long)o*I + i]) * scale[o] * dyr[o];
+  } else if (fmt == 2) {                            // int4 packed, rb=(I+1)/2
+    int rb = (I+1)/2, sh = (i&1)*4;
+    for (int o = 0; o < O; o++) {
+      int v = (w[(long)o*rb + (i>>1)] >> sh) & 0xF;
+      acc += float(v-8) * scale[o] * dyr[o];
+    }
+  } else if (fmt == 4) {                            // grouped int4: scale[o*ng + i/gs]
+    int rb = (I+1)/2, sh = (i&1)*4, ng = (I+gs-1)/gs, gi = i/gs;
+    for (int o = 0; o < O; o++) {
+      int v = (w[(long)o*rb + (i>>1)] >> sh) & 0xF;
+      acc += float(v-8) * scale[(long)o*ng + gi] * dyr[o];
+    }
+  } else {                                          // f32 (no scale)
+    device const float* wf = (device const float*)w;
+    for (int o = 0; o < O; o++) acc += wf[(long)o*I + i] * dyr[o];
+  }
+  dx[gid] += acc;
+}
+
+// t_xwt: C[s,o] = beta*C[s,o] + alpha * sum_k W[o,k] X[s,k]   (X @ W^T, f32)
+kernel void t_xwt(device const float* W [[buffer(0)]], device const float* X [[buffer(1)]],
+                  device float* C [[buffer(2)]],
+                  constant int& S [[buffer(3)]], constant int& K [[buffer(4)]],
+                  constant int& O [[buffer(5)]], constant float& alpha [[buffer(6)]],
+                  constant float& beta [[buffer(7)]],
+                  uint gid [[thread_position_in_grid]]) {
+  if (gid >= (uint)(S*O)) return;
+  int o = gid % O, s = gid / O;
+  device const float* xr = X + (long)s*K; device const float* wr = W + (long)o*K;
+  float acc = 0.0f;
+  for (int k = 0; k < K; k++) acc += wr[k]*xr[k];
+  C[gid] = beta*C[gid] + alpha*acc;
+}
+
+// t_xw: C[s,j] = beta*C[s,j] + alpha * sum_k X[s,k] W[k,j]    (X @ W, f32)
+kernel void t_xw(device const float* W [[buffer(0)]], device const float* X [[buffer(1)]],
+                 device float* C [[buffer(2)]],
+                 constant int& S [[buffer(3)]], constant int& K [[buffer(4)]],
+                 constant int& J [[buffer(5)]], constant float& alpha [[buffer(6)]],
+                 constant float& beta [[buffer(7)]],
+                 uint gid [[thread_position_in_grid]]) {
+  if (gid >= (uint)(S*J)) return;
+  int j = gid % J, s = gid / J;
+  device const float* xr = X + (long)s*K;
+  float acc = 0.0f;
+  for (int k = 0; k < K; k++) acc += xr[k]*W[(long)k*J + j];
+  C[gid] = beta*C[gid] + alpha*acc;
+}
+
+// t_outer: C[j,k] += alpha * sum_s P[s,j] Q[s,k]   (P^T @ Q, f32 accumulate)
+kernel void t_outer(device const float* P [[buffer(0)]], device const float* Q [[buffer(1)]],
+                    device float* C [[buffer(2)]],
+                    constant int& S [[buffer(3)]], constant int& J [[buffer(4)]],
+                    constant int& K [[buffer(5)]], constant float& alpha [[buffer(6)]],
+                    uint gid [[thread_position_in_grid]]) {
+  if (gid >= (uint)(J*K)) return;
+  int k = gid % K, j = gid / K;
+  float acc = 0.0f;
+  for (int s = 0; s < S; s++) acc += P[(long)s*J + j] * Q[(long)s*K + k];
+  C[gid] += alpha*acc;
+}
 )METAL";
 
 struct ColiMetalTensor {
   id<MTLBuffer> w;      // weights (wrapped, zero-copy when page-aligned)
   id<MTLBuffer> s;      // scales
-  int fmt, I, O; size_t wbytes;
+  id<MTLBuffer> b;      // affine bias (nil for existing QT formats)
+  int fmt, scalar_fmt, affine;
+  size_t I, O, group_size, wbytes, resident_bytes;
+  const void *host_w, *host_s, *host_b;
 };
+
+static void tensor_destroy(ColiMetalTensor *t) {
+  if (!t) return;
+  t->w=nil; t->s=nil; t->b=nil;
+  delete t;
+}
 
 static id<MTLDevice> g_dev;
 static id<MTLCommandQueue> g_queue;
-static id<MTLComputePipelineState> g_gemv, g_moe_gemv, g_moe_silu, g_moe_fwht;
+static id<MTLComputePipelineState> g_gemv, g_moe_gemv, g_moe_silu, g_moe_silu_clamped, g_moe_fwht;
+static id<MTLComputePipelineState> g_affine_q4, g_affine_q8;
+static int g_affine_width_ok;
 
 // fmt=6: sign-bit buffers for the GPU FWHT, one per tile size, cached forever (a
 // handful of sizes). The xorshift64* draw replicates quant.h e8_signs exactly —
@@ -625,6 +827,7 @@ static int g_rtop8_width_ok = 1; // hardware fact, independent of the policy gat
                                   // standalone coli_metal_rtop8 runner, so no caller can
                                   // reach r_top8_par's 32-lane reduction on an unsafe
                                   // device even by explicitly requesting par=1.
+static id<MTLComputePipelineState> g_t_tmul, g_t_xwt, g_t_xw, g_t_outer;   /* training (M6) */
 static size_t g_tensor_count, g_tensor_bytes;
 static uint64_t g_moe_ok, g_moe_fb, g_moe_experts;   // GPU blocks / CPU-fallback blocks / experts on GPU
 static double g_t_setup, g_t_gpu, g_t_scatter, g_t_kernel;       // per-block time breakdown (seconds)
@@ -758,16 +961,24 @@ static size_t fmt_bytes(int fmt, int I, int O) {
 // Grouped-int4 (fmt=4) scale-array size: one f32 per gsz-element group, per row -> O*ceil(I/gsz).
 // fp8 (fmt=8) scale-array size: one f32 per 128x128 BLOCK -> ceil(O/128)*ceil(I/128) (2D,
 // not per-row -- quant.h isn't included here, so the ceil-div is inlined rather than sharing
-// colibri.c's qt_scale_bytes/quant.h's fp8_nblk). The block is a fixed 128x128, so gs is
+// colibri.c's qt_scale_bytes/fp8_format.h's fp8_nblk). The block is a fixed 128x128, so gs is
 // ignored for fmt==8. f32 is this build's implemented scale
 // ENCODING for fmt=8 (see quant.h/colibri.c) -- this file has no reason to know that a
 // UE8M0 encoding exists at all: qt_resolve_fmt refuses it on the CPU read path before any
 // tensor in that encoding could ever reach this Metal-side sizing helper.
 static size_t fmt_scale_bytes(int fmt, int I, int O, int gs) {
+  // fmt=0 is RAW f32: the weights are already in their final units, so there is no
+  // scale array at all and callers legitimately pass scales == NULL (kimi_k3.c's
+  // k3_matmul_f32 does, for the KDA fa/fb/bp projections). Returning the per-row
+  // size below for fmt=0 made coli_metal_matmul wrap a NULL pointer, which segfaulted
+  // inside newBufferWithBytes' memmove whenever O*4 was not a page multiple, and
+  // silently produced a nil buffer (-> all-zero output) when it was. Must stay 0, and
+  // mm_gemv must correspondingly not apply a scale for fmt=0.
+  if (fmt == 0) return 0;
   if (fmt == 4) return (size_t)O * ((I + gs - 1) / gs) * sizeof(float);
   if (fmt == 6) return (size_t)O * ((I + gs - 1) / gs) * 2; // e8: 2-byte group scales
   if (fmt == 8) return (size_t)((O + 127) / 128) * (size_t)((I + 127) / 128) * sizeof(float); // fp8 block scales
-  return (size_t)O * sizeof(float); // per-row scale, fmt 0/1/2/3 (dev catch-all; #790 rebase must keep this)
+  return (size_t)O * sizeof(float); // per-row scale, fmt 1/2/3 (dev catch-all; #790 rebase must keep this)
 }
 
 // Wrap host memory zero-copy if page-aligned, else copy into a shared buffer.
@@ -802,6 +1013,16 @@ extern "C" int coli_metal_init(void) {
     if (e && atoi(e) == 0) g_rtop8_par = 0; }
   @autoreleasepool {
     g_dev = MTLCreateSystemDefaultDevice();
+    // MTLCreateSystemDefaultDevice() resolves the *display* device, so it is nil with no
+    // window-server session (ssh, CI, a launchd job) and on Intel Macs whose GPU is not the
+    // system default -- the card is still there and MTLCopyAllDevices() enumerates it. Prefer
+    // a non-low-power device, the same discrete>integrated ranking backend_vulkan.c applies,
+    // so a dual-GPU Mac does not land on the iGPU.
+    if (!g_dev) {
+      NSArray<id<MTLDevice>> *all = MTLCopyAllDevices();     // NS_RETURNS_RETAINED, ARC releases
+      for (id<MTLDevice> d in all) if (![d isLowPower]) { g_dev = d; break; }
+      if (!g_dev && [all count]) g_dev = [all objectAtIndex:0];
+    }
     if (!g_dev) return 0;
     g_queue = [g_dev newCommandQueue];
     NSError *err = nil;
@@ -814,6 +1035,8 @@ extern "C" int coli_metal_init(void) {
     g_moe_silu = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"moe_silu"] error:&err];
     g_moe_fwht = [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"moe_fwht"] error:&err];
     auto P=[&](const char*n){ return [g_dev newComputePipelineStateWithFunction:[lib newFunctionWithName:@(n)] error:&err]; };
+    g_moe_silu_clamped=P("moe_silu_clamped");
+    g_affine_q4=P("mm_affine_q4"); g_affine_q8=P("mm_affine_q8");
     g_a_rms=P("a_rmsnorm"); g_a_rope=P("a_rope"); g_a_copy=P("a_copy");
     g_a_qabs=P("a_qabs"); g_a_score=P("a_score"); g_a_smax=P("a_smax"); g_a_clat=P("a_clat"); g_a_ctx=P("a_ctx");
     g_a_add=P("a_add"); g_r_router=P("r_router"); g_r_top8=P("r_top8"); g_r_top8p=P("r_top8_par");
@@ -821,6 +1044,17 @@ extern "C" int coli_metal_init(void) {
     g_kda_state=P("kda_state");
     g_kda_conv_silu=P("kda_conv_silu"); g_kda_l2_norm=P("kda_l2_norm");
     if(!g_a_add||!g_r_router||!g_r_top8||!g_r_top8p||!g_kv_rope||!g_kv_clear||!g_kda_state||!g_kda_conv_silu||!g_kda_l2_norm){ fprintf(stderr,"[metal] tail pipelines failed\n"); g_dev=nil; return 0; }
+    if (!g_affine_q4 || !g_affine_q8) {
+      fprintf(stderr,"[metal] MLX affine GEMV disabled: pipeline creation failed\n");
+      g_affine_width_ok = 0;
+    } else {
+      g_affine_width_ok = [g_affine_q4 threadExecutionWidth] == 32 &&
+                          [g_affine_q8 threadExecutionWidth] == 32;
+      if (!g_affine_width_ok)
+        fprintf(stderr,"[metal] MLX affine GEMV disabled: simd width Q4=%lu Q8=%lu, expected 32\n",
+                (unsigned long)[g_affine_q4 threadExecutionWidth],
+                (unsigned long)[g_affine_q8 threadExecutionWidth]);
+    }
     // r_top8_par's reduction hardcodes SIMD width 32 (shuffle-down offsets 16..1, one
     // 32-thread threadgroup per row). True on all Apple Silicon shipped to date, but a
     // non-32-width device would reduce wrongly AND race multiple lane-0 writers, so this
@@ -836,7 +1070,9 @@ extern "C" int coli_metal_init(void) {
                         "r_top8 in use\n", (unsigned long)[g_r_top8p threadExecutionWidth]);
       g_rtop8_par = 0;
     }
-    if (!g_gemv || !g_moe_gemv || !g_moe_silu || !g_moe_fwht || !g_a_rms || !g_a_rope || !g_a_copy ||
+    g_t_tmul=P("t_tmul"); g_t_xwt=P("t_xwt"); g_t_xw=P("t_xw"); g_t_outer=P("t_outer");
+    if(!g_t_tmul||!g_t_xwt||!g_t_xw||!g_t_outer){ fprintf(stderr,"[metal] training pipelines failed\n"); g_dev=nil; return 0; }
+    if (!g_gemv || !g_moe_gemv || !g_moe_silu || !g_moe_silu_clamped || !g_moe_fwht || !g_a_rms || !g_a_rope || !g_a_copy ||
         !g_a_qabs || !g_a_score || !g_a_smax || !g_a_clat || !g_a_ctx) {
       fprintf(stderr, "[metal] pipeline failed\n"); g_dev = nil; return 0; }
     // E5 experiment: COLI_METAL_RESSET=1 -- see g_resset_obj comment above.
@@ -898,11 +1134,20 @@ extern "C" void coli_metal_unregister(void *base) {
 }
 // Resolve a host pointer inside a registered slab to (buffer, gpuAddress). Returns nil if unknown.
 static id<MTLBuffer> resolve(const void *p, uint64_t *addr) {
-  std::lock_guard<std::mutex> lk(g_slab_mtx);
-  uintptr_t u=(uintptr_t)p;
-  for (auto &s : g_slabs) { uintptr_t b=(uintptr_t)s.base;
-    if (u>=b && u<b+s.len) { *addr = (uint64_t)[s.buf gpuAddress] + (u-b); return s.buf; } }
-  return nil;
+  const uintptr_t u=(uintptr_t)p;
+  uintptr_t base=0;
+  id<MTLBuffer> buffer=nil;  // ARC retains it across removal from the registry.
+  {
+    std::lock_guard<std::mutex> lk(g_slab_mtx);
+    for (auto &s : g_slabs) {
+      const uintptr_t b=(uintptr_t)s.base;
+      if (u>=b && u-b<s.len) { buffer=s.buf; base=b; break; }
+    }
+  }
+  if (!buffer) return nil;
+  // Driver calls must not hold up independent slab registration/unregistration.
+  *addr=(uint64_t)[buffer gpuAddress]+(u-base);
+  return buffer;
 }
 
 // Keep-alive spinner (COLI_METAL_SPIN=1): keeps trivial GPU work in flight so the GPU
@@ -940,9 +1185,21 @@ extern "C" void coli_metal_shutdown(void) {
   }
 #endif
   g_resset_obj=nil; g_resset_enabled=false; g_resset_dirty=false;
-  g_gemv=nil; g_queue=nil; g_dev=nil; g_tensor_count=g_tensor_bytes=0;
+  g_gemv=nil; g_affine_q4=nil; g_affine_q8=nil; g_affine_width_ok=0;
+  g_queue=nil; g_dev=nil; g_tensor_count=g_tensor_bytes=0;
 }
 extern "C" int  coli_metal_available(void) { return g_dev != nil; }
+extern "C" ColiMetalAffineCapability coli_metal_affine_capability(void) {
+  if (!g_dev) return COLI_METAL_AFFINE_CAP_NOT_INITIALIZED;
+  if (!g_affine_q4 || !g_affine_q8)
+    return COLI_METAL_AFFINE_CAP_PIPELINE_UNAVAILABLE;
+  if (!g_affine_width_ok)
+    return COLI_METAL_AFFINE_CAP_SIMD_WIDTH_UNSUPPORTED;
+  return COLI_METAL_AFFINE_CAP_READY;
+}
+extern "C" int  coli_metal_affine_available(void) {
+  return coli_metal_affine_capability() == COLI_METAL_AFFINE_CAP_READY;
+}
 extern "C" void coli_metal_stats(size_t *c, size_t *b) { if(c)*c=g_tensor_count; if(b)*b=g_tensor_bytes; }
 extern "C" int  coli_metal_mem_info(size_t *used, size_t *total) {
   if (!g_dev) return 0;
@@ -958,15 +1215,31 @@ extern "C" int coli_metal_matmul(ColiMetalTensor **tp, float *y, const float *x,
    * contiguous range check below: it is not adjacent to it. */
   if (!g_dev || fmt < 0 || (fmt > 4 && fmt != 8)) return 0;
   if(!weights||!x||!y) return 0;
+  /* Fail CLOSED to the caller's CPU path if a format that NEEDS a scale array was
+   * handed a NULL one, rather than letting wrap() memmove from address 0. Sized off
+   * fmt_scale_bytes so the two can't drift: any format it reports bytes for must have
+   * a real pointer behind them. (fmt=0 reports 0 bytes and is exempt by construction.) */
+  if (!scales && fmt_scale_bytes(fmt, I, O, gs) != 0) {
+    static bool warned = false;
+    if (!warned) { warned = true;
+      fprintf(stderr, "[metal] matmul: fmt=%d needs a scale array but scales==NULL; "
+                      "falling back to CPU\n", fmt); }
+    return 0;
+  }
   @autoreleasepool {
     ColiMetalTensor *t = *tp;
+    if (t && t->affine) return 0;
     if (!t) {
       t = new ColiMetalTensor();
-      t->fmt = fmt; t->I = I; t->O = O; t->wbytes = fmt_bytes(fmt, I, O);
+      t->fmt = fmt; t->scalar_fmt = 0; t->affine = 0;
+      t->I = I; t->O = O; t->group_size = (size_t)gs;
+      t->host_w = weights; t->host_s = scales; t->host_b = NULL;
+      t->wbytes = fmt_bytes(fmt, I, O); t->resident_bytes = t->wbytes;
+      t->b = nil;
       t->w = wrap(weights, t->wbytes);
       { size_t sb=fmt_scale_bytes(fmt, I, O, gs); t->s=sb?wrap(scales,sb):0; }
       *tp = t;
-      g_tensor_count++; g_tensor_bytes += t->wbytes;
+      g_tensor_count++; g_tensor_bytes += t->resident_bytes;
     }
     id<MTLBuffer> bx = [g_dev newBufferWithBytes:x length:(size_t)S*I*sizeof(float) options:MTLResourceStorageModeShared];
     id<MTLBuffer> by = [g_dev newBufferWithLength:(size_t)S*O*sizeof(float) options:MTLResourceStorageModeShared];
@@ -984,6 +1257,183 @@ extern "C" int coli_metal_matmul(ColiMetalTensor **tp, float *y, const float *x,
     memcpy(y, [by contents], (size_t)S*O*sizeof(float));
   }
   return 1;
+}
+
+struct AffineGemvParamsHost {
+  uint32_t output_dim;
+  uint32_t input_dim;
+  uint32_t group_size;
+  uint32_t scalar_format;
+  uint32_t batch;
+};
+static_assert(sizeof(AffineGemvParamsHost) == 5*sizeof(uint32_t),
+              "Metal affine parameter layout drift");
+
+/* Shared encode/run body for the two affine entry points: the buffers are
+ * either a resident handle's per-section wraps (offsets 0) or one whole-slot
+ * buffer addressed by section byte offsets.  Synchronous; returns 0 on
+ * any allocation, encoder, or command-buffer failure. */
+static int affine_dispatch_run(id<MTLBuffer> wbuf, size_t woff,
+                               id<MTLBuffer> sbuf, size_t soff,
+                               id<MTLBuffer> bbuf, size_t boff,
+                               float *y, const float *x, int batch,
+                               const ColiAffineQuantizedView *view) {
+  const size_t input_bytes=(size_t)batch*view->input_dim*sizeof(float);
+  const size_t output_bytes=(size_t)batch*view->output_dim*sizeof(float);
+  id<MTLBuffer> bx=[g_dev newBufferWithBytes:x length:input_bytes
+                                      options:MTLResourceStorageModeShared];
+  id<MTLBuffer> by=[g_dev newBufferWithLength:output_bytes
+                                     options:MTLResourceStorageModeShared];
+  if (!bx || !by) return 0;
+  AffineGemvParamsHost p = {
+    (uint32_t)view->output_dim, (uint32_t)view->input_dim,
+    (uint32_t)view->group_size, (uint32_t)view->scalar_format,
+    (uint32_t)batch
+  };
+  id<MTLCommandBuffer> cb=[g_queue commandBuffer];
+  id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];
+  if (!cb || !e) return 0;
+  [e setComputePipelineState:(view->format == COLI_AFFINE_MLX_Q4 ?
+                              g_affine_q4 : g_affine_q8)];
+  [e setBuffer:bx offset:0 atIndex:0]; [e setBuffer:wbuf offset:woff atIndex:1];
+  [e setBuffer:sbuf offset:soff atIndex:2]; [e setBuffer:bbuf offset:boff atIndex:3];
+  [e setBuffer:by offset:0 atIndex:4]; [e setBytes:&p length:sizeof(p) atIndex:5];
+  [e dispatchThreads:MTLSizeMake(32,(NSUInteger)batch*view->output_dim,1)
+      threadsPerThreadgroup:MTLSizeMake(32,1,1)];
+  [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+  if (cb.status != MTLCommandBufferStatusCompleted) {
+    fprintf(stderr,"[metal] affine GEMV command buffer failed (status=%ld): %s\n",
+            (long)cb.status,
+            cb.error ? [[cb.error localizedDescription] UTF8String] : "?");
+    return 0;
+  }
+  memcpy(y,[by contents],output_bytes);
+  return 1;
+}
+
+extern "C" int coli_metal_matmul_affine(ColiMetalTensor **tp,
+                                         float *y, const float *x, int batch,
+                                         const ColiAffineQuantizedView *view) {
+  if (!tp || !y || !x || !coli_metal_affine_available() ||
+      !coli_metal_affine_dispatch_supported(view,batch))
+    return 0;
+  @autoreleasepool {
+    const unsigned bits=coli_affine_bits(view->format), per_word=32u/bits;
+    const size_t groups=view->input_dim/view->group_size;
+    const size_t wbytes=view->output_dim*(view->input_dim/per_word)*sizeof(uint32_t);
+    const size_t scalar_bytes=view->output_dim*groups*
+                              coli_affine_scalar_size(view->scalar_format);
+    if (scalar_bytes > (SIZE_MAX-wbytes)/2)
+      return 0;
+    const size_t resident_bytes=wbytes+2*scalar_bytes;
+    ColiMetalTensor *t=*tp;
+    if (t && (!t->affine || t->fmt != (int)view->format ||
+              t->scalar_fmt != (int)view->scalar_format ||
+              t->I != view->input_dim || t->O != view->output_dim ||
+              t->group_size != view->group_size ||
+              t->host_w != view->weights || t->host_s != view->scales ||
+              t->host_b != view->biases))
+      return 0;
+    const bool fresh=t==NULL;
+    if (fresh) {
+      id<MTLBuffer> bw=wrap(view->weights,wbytes);
+      id<MTLBuffer> bs=wrap(view->scales,scalar_bytes);
+      id<MTLBuffer> bb=wrap(view->biases,scalar_bytes);
+      if (!bw || !bs || !bb) return 0;
+      t=new ColiMetalTensor();
+      t->w=bw; t->s=bs; t->b=bb;
+      t->fmt=(int)view->format; t->scalar_fmt=(int)view->scalar_format;
+      t->affine=1; t->I=view->input_dim; t->O=view->output_dim;
+      t->group_size=view->group_size; t->wbytes=wbytes;
+      t->resident_bytes=resident_bytes;
+      t->host_w=view->weights; t->host_s=view->scales; t->host_b=view->biases;
+    }
+
+    if (!affine_dispatch_run(t->w, 0, t->s, 0, t->b, 0, y, x, batch, view)) {
+      if (fresh) tensor_destroy(t);
+      return 0;
+    }
+    if (fresh) {
+      *tp=t;
+      g_tensor_count++;
+      g_tensor_bytes+=t->resident_bytes;
+    }
+  }
+  return 1;
+}
+
+// ---- Whole-slot buffers for bounded, refillable qpack expert slots ----
+// One MTLBuffer per slot, wrapped zero-copy EXACTLY once; the pool refills the
+// same host memory with different experts, and dispatches address the weight,
+// scale, and bias sections by byte offset inside the registered buffer.  The
+// zero-copy wrap is mandatory, not best-effort: the copying fallback in wrap()
+// would snapshot the first fill and silently detach the GPU from every later
+// refill, which is exactly the stale-projection hazard the whole-slot
+// buffers exist to remove.
+struct ColiMetalSlotBuffer {
+  id<MTLBuffer> buf;
+  void *base;
+  size_t len;
+};
+
+extern "C" ColiMetalSlotBuffer *coli_metal_slot_register(void *base, size_t len) {
+  const size_t pg = 16384;   // Apple page: newBufferWithBytesNoCopy contract
+  if (!g_dev || !base || !len) return NULL;
+  if (((uintptr_t)base % pg) != 0 || (len % pg) != 0) return NULL;
+  id<MTLBuffer> b = [g_dev newBufferWithBytesNoCopy:base length:len
+                                            options:MTLResourceStorageModeShared
+                                        deallocator:nil];
+  if (!b) return NULL;
+  ColiMetalSlotBuffer *s = new ColiMetalSlotBuffer();
+  s->buf = b; s->base = base; s->len = len;
+  g_tensor_count++; g_tensor_bytes += len;
+  return s;
+}
+
+extern "C" void coli_metal_slot_unregister(ColiMetalSlotBuffer *slot) {
+  if (!slot) return;
+  g_tensor_count--; g_tensor_bytes -= slot->len;
+  slot->buf = nil;
+  delete slot;
+}
+
+extern "C" int coli_metal_matmul_affine_slot(ColiMetalSlotBuffer *slot,
+                                             size_t weights_offset,
+                                             size_t scales_offset,
+                                             size_t biases_offset,
+                                             float *y, const float *x, int batch,
+                                             const ColiAffineQuantizedView *view) {
+  if (!slot || !slot->buf || !y || !x || !coli_metal_affine_available() ||
+      !coli_metal_affine_dispatch_supported(view,batch))
+    return 0;
+  @autoreleasepool {
+    const unsigned bits=coli_affine_bits(view->format), per_word=32u/bits;
+    const size_t groups=view->input_dim/view->group_size;
+    const size_t wbytes=view->output_dim*(view->input_dim/per_word)*sizeof(uint32_t);
+    const size_t scalar_bytes=view->output_dim*groups*
+                              coli_affine_scalar_size(view->scalar_format);
+    /* Every section must lie inside the registered slot, and the weight words
+     * must land 4-byte aligned (base is page-aligned; the kernel casts each
+     * row to device const uint*). */
+    if (weights_offset % 4 != 0) return 0;
+    if (weights_offset > slot->len || wbytes > slot->len - weights_offset)
+      return 0;
+    if (scales_offset > slot->len || scalar_bytes > slot->len - scales_offset)
+      return 0;
+    if (biases_offset > slot->len || scalar_bytes > slot->len - biases_offset)
+      return 0;
+    /* Tripwire: the descriptor must describe THIS slot's current fill.  A
+     * view carried across a refill (or aimed at another slot) disagrees with
+     * base+offset and is refused instead of dispatched. */
+    const unsigned char *base=(const unsigned char *)slot->base;
+    if (view->weights != base + weights_offset ||
+        view->scales != base + scales_offset ||
+        view->biases != base + biases_offset)
+      return 0;
+    return affine_dispatch_run(slot->buf, weights_offset,
+                               slot->buf, scales_offset,
+                               slot->buf, biases_offset, y, x, batch, view);
+  }
 }
 
 // ---- fused decode attention scratch (GLM-5.2 dims) ----
@@ -1367,10 +1817,128 @@ extern "C" int coli_metal_rtop8(int par, const float *sig, const float *bias, in
   return 1;
 }
 
+// ---- training entry points (M6): synchronous, correctness-first, unfused.
+// Inputs go through wrap() (zero-copy when page-aligned, else one copy);
+// accumulate outputs are copied in, updated on GPU, copied back.
+
+extern "C" int coli_metal_train_tmul(float *dx, const float *dy, const void *w, const float *sp,
+                                     int fmt, int gs, int S, int I, int O) {
+  if (!g_dev || !g_t_tmul || (fmt!=0 && fmt!=1 && fmt!=2 && fmt!=4)) return 0;
+  if (fmt==4 && gs<1) return 0;
+  @autoreleasepool {
+    size_t wbytes = (fmt==1)?(size_t)O*I : (fmt==2||fmt==4)?(size_t)O*((I+1)/2) : (size_t)O*I*4;
+    size_t sbytes = (fmt==4)?(size_t)O*((I+gs-1)/gs)*4 : (size_t)O*4;
+    id<MTLBuffer> wb=wrap(w,wbytes);
+    id<MTLBuffer> sb=wrap(sp?sp:(const void*)dx, sp?sbytes:4);   /* fmt0: unused, bind dummy */
+    id<MTLBuffer> dyb=wrap(dy,(size_t)S*O*4);
+    id<MTLBuffer> dxb=[g_dev newBufferWithBytes:dx length:(size_t)S*I*4 options:MTLResourceStorageModeShared];
+    if(!wb||!sb||!dyb||!dxb) return 0;
+    id<MTLCommandBuffer> cb=[g_queue commandBuffer]; id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];
+    [e setComputePipelineState:g_t_tmul];
+    [e setBuffer:wb offset:0 atIndex:0]; [e setBuffer:sb offset:0 atIndex:1];
+    [e setBuffer:dyb offset:0 atIndex:2]; [e setBuffer:dxb offset:0 atIndex:3];
+    [e setBytes:&S length:4 atIndex:4]; [e setBytes:&I length:4 atIndex:5];
+    [e setBytes:&O length:4 atIndex:6]; [e setBytes:&fmt length:4 atIndex:7];
+    [e setBytes:&gs length:4 atIndex:8];
+    size_t n=(size_t)S*I;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    if(cb.status==MTLCommandBufferStatusError){ fprintf(stderr,"[metal] train_tmul cmdbuf error\n"); return 0; }
+    memcpy(dx,[dxb contents],(size_t)S*I*4);
+  }
+  return 1;
+}
+
+// z[S,rank] = x @ A^T ; y[S,O] += scale * z @ B^T
+extern "C" int coli_metal_train_lora_fwd(float *y, float *z, const float *x,
+                                         const float *A, const float *B, float scale,
+                                         int S, int I, int O, int rank) {
+  if (!g_dev || !g_t_xwt) return 0;
+  @autoreleasepool {
+    id<MTLBuffer> xb=wrap(x,(size_t)S*I*4), Ab=wrap(A,(size_t)rank*I*4), Bb=wrap(B,(size_t)O*rank*4);
+    id<MTLBuffer> zb=[g_dev newBufferWithLength:(size_t)S*rank*4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> yb=[g_dev newBufferWithBytes:y length:(size_t)S*O*4 options:MTLResourceStorageModeShared];
+    if(!xb||!Ab||!Bb||!zb||!yb) return 0;
+    float one=1.f, zero=0.f;
+    id<MTLCommandBuffer> cb=[g_queue commandBuffer]; id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];
+    [e setComputePipelineState:g_t_xwt];             /* z = x A^T */
+    [e setBuffer:Ab offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1]; [e setBuffer:zb offset:0 atIndex:2];
+    [e setBytes:&S length:4 atIndex:3]; [e setBytes:&I length:4 atIndex:4]; [e setBytes:&rank length:4 atIndex:5];
+    [e setBytes:&one length:4 atIndex:6]; [e setBytes:&zero length:4 atIndex:7];
+    size_t n=(size_t)S*rank;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    [e setComputePipelineState:g_t_xwt];             /* y += scale * z B^T */
+    [e setBuffer:Bb offset:0 atIndex:0]; [e setBuffer:zb offset:0 atIndex:1]; [e setBuffer:yb offset:0 atIndex:2];
+    [e setBytes:&S length:4 atIndex:3]; [e setBytes:&rank length:4 atIndex:4]; [e setBytes:&O length:4 atIndex:5];
+    [e setBytes:&scale length:4 atIndex:6]; [e setBytes:&one length:4 atIndex:7];
+    n=(size_t)S*O;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    if(cb.status==MTLCommandBufferStatusError){ fprintf(stderr,"[metal] lora_fwd cmdbuf error\n"); return 0; }
+    memcpy(z,[zb contents],(size_t)S*rank*4);
+    memcpy(y,[yb contents],(size_t)S*O*4);
+  }
+  return 1;
+}
+
+// dz = scale * dy @ B ; dB += scale * dy^T z ; dA += dz^T x ; dx += dz @ A
+extern "C" int coli_metal_train_lora_bwd(float *dA, float *dB, float *dx,
+                                         const float *x, const float *z, const float *dy,
+                                         const float *A, const float *B, float scale,
+                                         int S, int I, int O, int rank) {
+  if (!g_dev || !g_t_xw || !g_t_outer) return 0;
+  @autoreleasepool {
+    id<MTLBuffer> xb=wrap(x,(size_t)S*I*4), zb=wrap(z,(size_t)S*rank*4), dyb=wrap(dy,(size_t)S*O*4);
+    id<MTLBuffer> Ab=wrap(A,(size_t)rank*I*4), Bb=wrap(B,(size_t)O*rank*4);
+    id<MTLBuffer> dzb=[g_dev newBufferWithLength:(size_t)S*rank*4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dAb=[g_dev newBufferWithBytes:dA length:(size_t)rank*I*4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dBb=[g_dev newBufferWithBytes:dB length:(size_t)O*rank*4 options:MTLResourceStorageModeShared];
+    id<MTLBuffer> dxb=dx?[g_dev newBufferWithBytes:dx length:(size_t)S*I*4 options:MTLResourceStorageModeShared]:nil;
+    if(!xb||!zb||!dyb||!Ab||!Bb||!dzb||!dAb||!dBb||(dx&&!dxb)) return 0;
+    float one=1.f, zero=0.f;
+    id<MTLCommandBuffer> cb=[g_queue commandBuffer]; id<MTLComputeCommandEncoder> e=[cb computeCommandEncoder];
+    size_t n;
+    [e setComputePipelineState:g_t_xw];              /* dz = scale * dy @ B */
+    [e setBuffer:Bb offset:0 atIndex:0]; [e setBuffer:dyb offset:0 atIndex:1]; [e setBuffer:dzb offset:0 atIndex:2];
+    [e setBytes:&S length:4 atIndex:3]; [e setBytes:&O length:4 atIndex:4]; [e setBytes:&rank length:4 atIndex:5];
+    [e setBytes:&scale length:4 atIndex:6]; [e setBytes:&zero length:4 atIndex:7];
+    n=(size_t)S*rank;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    [e setComputePipelineState:g_t_outer];           /* dB += scale * dy^T z */
+    [e setBuffer:dyb offset:0 atIndex:0]; [e setBuffer:zb offset:0 atIndex:1]; [e setBuffer:dBb offset:0 atIndex:2];
+    [e setBytes:&S length:4 atIndex:3]; [e setBytes:&O length:4 atIndex:4]; [e setBytes:&rank length:4 atIndex:5];
+    [e setBytes:&scale length:4 atIndex:6];
+    n=(size_t)O*rank;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e setComputePipelineState:g_t_outer];           /* dA += dz^T x */
+    [e setBuffer:dzb offset:0 atIndex:0]; [e setBuffer:xb offset:0 atIndex:1]; [e setBuffer:dAb offset:0 atIndex:2];
+    [e setBytes:&S length:4 atIndex:3]; [e setBytes:&rank length:4 atIndex:4]; [e setBytes:&I length:4 atIndex:5];
+    [e setBytes:&one length:4 atIndex:6];
+    n=(size_t)rank*I;
+    [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    if(dx){
+        [e setComputePipelineState:g_t_xw];          /* dx += dz @ A */
+        [e setBuffer:Ab offset:0 atIndex:0]; [e setBuffer:dzb offset:0 atIndex:1]; [e setBuffer:dxb offset:0 atIndex:2];
+        [e setBytes:&S length:4 atIndex:3]; [e setBytes:&rank length:4 atIndex:4]; [e setBytes:&I length:4 atIndex:5];
+        [e setBytes:&one length:4 atIndex:6]; [e setBytes:&one length:4 atIndex:7];
+        n=(size_t)S*I;
+        [e dispatchThreadgroups:MTLSizeMake((n+255)/256,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    }
+    [e endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    if(cb.status==MTLCommandBufferStatusError){ fprintf(stderr,"[metal] lora_bwd cmdbuf error\n"); return 0; }
+    memcpy(dA,[dAb contents],(size_t)rank*I*4);
+    memcpy(dB,[dBb contents],(size_t)O*rank*4);
+    if(dx) memcpy(dx,[dxb contents],(size_t)S*I*4);
+  }
+  return 1;
+}
+
 extern "C" void coli_metal_tensor_free(ColiMetalTensor *t) {
   if (!t) return;
-  g_tensor_count--; g_tensor_bytes -= t->wbytes;
-  t->w = nil; t->s = nil; delete t;
+  g_tensor_count--; g_tensor_bytes -= t->resident_bytes;
+  tensor_destroy(t);
 }
 extern "C" size_t coli_metal_tensor_bytes(const ColiMetalTensor *t) { return t ? t->wbytes : 0; }
 
@@ -1378,7 +1946,8 @@ extern "C" size_t coli_metal_tensor_bytes(const ColiMetalTensor *t) { return t ?
 // if Metal is off or any expert pointer is not in a registered slab.
 // Encode + commit a MoE block (no wait). Writes hh[R,D] into hh_buf. Returns nil on
 // unresolved slab / bad fmt (caller falls back to CPU).
-static id<MTLCommandBuffer> moe_submit(int nb, int D, int Iinter, int fmt, int qgs,
+static id<MTLCommandBuffer> moe_submit_impl(int nb, int D, int Iinter, int fmt, int qgs,
+                         int clamped, float swiglu_limit,
                          const void *const *g, const void *const *u, const void *const *d,
                          const float *const *gs, const float *const *us, const float *const *ds,
                          const float *xg, const int *xoff, const int *nr, int R,
@@ -1453,8 +2022,9 @@ static id<MTLCommandBuffer> moe_submit(int nb, int D, int Iinter, int fmt, int q
   gemv(bag,bsg,xg_buf,gg_buf,Iinter,D,D);                     // gate
   gemv(bau,bsu,xg_buf,uu_buf,Iinter,D,D);                     // up
   [e memoryBarrierWithScope:MTLBarrierScopeBuffers];
-  [e setComputePipelineState:g_moe_silu];
+  [e setComputePipelineState:clamped ? g_moe_silu_clamped : g_moe_silu];
   [e setBuffer:gg_buf offset:0 atIndex:0];[e setBuffer:uu_buf offset:0 atIndex:1];
+  if (clamped) [e setBytes:&swiglu_limit length:sizeof(float) atIndex:2];
   [e dispatchThreads:MTLSizeMake((size_t)R*Iinter,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
   [e memoryBarrierWithScope:MTLBarrierScopeBuffers];
   if (fmt == 6) {   /* rotate the down-projection input in place: same block-diagonal
@@ -1513,7 +2083,29 @@ extern "C" int coli_metal_moe_block(int nb, int D, int Iinter, int fmt, int qgs,
     g_gg = ensure(g_gg,&g_gg_cap,(size_t)R*Iinter*4);
     g_uu = ensure(g_uu,&g_uu_cap,(size_t)R*Iinter*4);
     g_hh = ensure(g_hh,&g_hh_cap,(size_t)R*D*4);
-    id<MTLCommandBuffer> cb = moe_submit(nb,D,Iinter,fmt,qgs,g,u,d,gs,us,ds,xg,xoff,nr,R,g_xg,g_gg,g_uu,g_hh);
+    id<MTLCommandBuffer> cb = moe_submit_impl(nb,D,Iinter,fmt,qgs,0,0.0f,g,u,d,gs,us,ds,xg,xoff,nr,R,g_xg,g_gg,g_uu,g_hh);
+    if (!cb) return 0;
+    return moe_finish(cb,g_hh,nb,R,D,rows,rw,out);
+  }
+}
+
+extern "C" int coli_metal_moe_block_clamped(int nb, int D, int Iinter, int fmt, int qgs,
+                         const void *const *g, const void *const *u, const void *const *d,
+                         const float *const *gs, const float *const *us, const float *const *ds,
+                         const float *xg, const int *xoff, const int *nr,
+                         const int *rows, const float *rw, float *out, int S,
+                         float swiglu_limit) {
+  (void)S;
+  if (!(swiglu_limit > 0.0f)) return 0;
+  @autoreleasepool {
+    int R = 0; for (int e=0;e<nb;e++) R += nr[e];
+    if (R == 0) return 1;
+    g_xg = ensure(g_xg,&g_xg_cap,(size_t)R*D*4);
+    g_gg = ensure(g_gg,&g_gg_cap,(size_t)R*Iinter*4);
+    g_uu = ensure(g_uu,&g_uu_cap,(size_t)R*Iinter*4);
+    g_hh = ensure(g_hh,&g_hh_cap,(size_t)R*D*4);
+    id<MTLCommandBuffer> cb = moe_submit_impl(nb,D,Iinter,fmt,qgs,1,swiglu_limit,
+        g,u,d,gs,us,ds,xg,xoff,nr,R,g_xg,g_gg,g_uu,g_hh);
     if (!cb) return 0;
     return moe_finish(cb,g_hh,nb,R,D,rows,rw,out);
   }
@@ -1538,7 +2130,7 @@ extern "C" ColiMetalMoeHandle* coli_metal_moe_block_begin(int nb, int D, int Iin
     id<MTLBuffer> bgg=[g_dev newBufferWithLength:(size_t)R*Iinter*4 options:g_res_opts];
     id<MTLBuffer> buu=[g_dev newBufferWithLength:(size_t)R*Iinter*4 options:g_res_opts];
     id<MTLBuffer> bhh=[g_dev newBufferWithLength:(size_t)R*D*4 options:g_res_opts];
-    id<MTLCommandBuffer> cb = moe_submit(nb,D,Iinter,fmt,qgs,g,u,d,gs,us,ds,xg,xoff,nr,R,bxg,bgg,buu,bhh);
+    id<MTLCommandBuffer> cb = moe_submit_impl(nb,D,Iinter,fmt,qgs,0,0.0f,g,u,d,gs,us,ds,xg,xoff,nr,R,bxg,bgg,buu,bhh);
     if (!cb) return nullptr;
     ColiMetalMoeHandle *h = new ColiMetalMoeHandle();
     h->cb=cb; h->hh=bhh; h->rows.assign(rows,rows+R); h->rwv.assign(rw,rw+R);
@@ -1608,6 +2200,27 @@ extern "C" int coli_metal_add(float *y, const float *a, size_t n) {
     [cb commit]; [cb waitUntilCompleted];
     memcpy(y, yb.contents, n*4);
     return cb.status != MTLCommandBufferStatusError;
+  }
+}
+
+extern "C" int coli_metal_silu_mul_clamped(float *g, const float *u, size_t n, float limit) {
+  if (!g_dev || n == 0 || !(limit > 0.0f)) return n == 0 ? 1 : 0;
+  @autoreleasepool {
+    id<MTLCommandBuffer> cb = [g_queue commandBuffer];
+    id<MTLBuffer> gb = cpubuf(g_dev, g, n*4);
+    id<MTLBuffer> ub = cpubuf(g_dev, u, n*4);
+    if (!gb || !ub) return 0;
+    id<MTLComputeCommandEncoder> e = [cb computeCommandEncoder];
+    [e setComputePipelineState:g_moe_silu_clamped];
+    [e setBuffer:gb offset:0 atIndex:0]; [e setBuffer:ub offset:0 atIndex:1];
+    [e setBytes:&limit length:sizeof(float) atIndex:2];
+    [e dispatchThreads:MTLSizeMake((uint32_t)n,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+    [e endEncoding];
+    { id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder]; [bl synchronizeResource:gb]; [bl endEncoding]; }
+    [cb commit]; [cb waitUntilCompleted];
+    if (cb.status == MTLCommandBufferStatusError) return 0;
+    memcpy(g, gb.contents, n*4);
+    return 1;
   }
 }
 
