@@ -1,3 +1,5 @@
+Historical audit; paths may no longer exist.
+
 # HIVI — Repository Cleanup Audit (Stage A)
 
 **Date:** 2026-11-06  
