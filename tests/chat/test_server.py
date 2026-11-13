@@ -152,3 +152,14 @@ async def test_router_v1_models_shows_only_the_active_model(monkeypatch):
     async with _client() as c:
         r = await c.get("/v1/models")
     assert [row["id"] for row in r.json()["data"]] == ["b"]
+
+
+async def test_ui_files_are_always_revalidated():
+    """The desktop app keeps a cache between launches; it must never show an old home page."""
+    async with _client() as c:
+        home = await c.get("/")
+        brand = await c.get("/static/brand/brand.css")
+    assert home.status_code == 200 and home.headers["cache-control"] == "no-cache"
+    assert 'class="hero-lockup"' in home.text and 'class="hero-bunny"' in home.text
+    assert 'class="brand-bunny"' in home.text and 'data-text="HIVI"' in home.text
+    assert brand.status_code == 200 and brand.headers["cache-control"] == "no-cache"

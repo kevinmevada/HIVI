@@ -649,18 +649,34 @@ def play_outro(window, timeout: float = 5.0) -> None:
         log.debug("outro skipped: %s", e)
 
 
+class FullscreenApi:
+    def __init__(self) -> None:
+        self.window = None
+        self.fullscreen = True
+
+    def toggle_fullscreen(self) -> bool:
+        if self.window is None:
+            return self.fullscreen
+        self.window.toggle_fullscreen()
+        self.fullscreen = not self.fullscreen
+        return self.fullscreen
+
+
 def run_window(owned: list) -> None:
     import webview
 
+    api = FullscreenApi()
     window = webview.create_window(
         TITLE,
         html=splash_html(),
         width=1280,
         height=860,
         fullscreen=True,
+        js_api=api,
         min_size=(900, 600),
         background_color="#000000" if system_dark() else "#FFFFFF",
     )
+    api.window = window
 
     def status(msg: str) -> None:
         try:

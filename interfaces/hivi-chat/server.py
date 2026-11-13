@@ -165,9 +165,16 @@ def _adapt_chat_body(raw: bytes) -> tuple[bytes, dict[str, str]]:
     return json.dumps(adapted).encode("utf-8"), extra
 
 
+# The UI files change with every HIVI update. Without this header, the desktop app's window
+# (which keeps a cache between launches) can keep showing an old home page. "no-cache" still
+# lets it reuse a file when the server confirms it hasn't changed, so this costs almost nothing.
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+
 @app.get("/")
 def index():
-    return FileResponse(HERE / "index.html")
+    return FileResponse(HERE / "index.html", headers=_NO_CACHE)
 
 
 @app.get("/api/models")
@@ -637,8 +644,17 @@ async def health_proxy(request: Request):
     return await _proxy_buffered(request, "health")
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """Static UI files (brand images, styles) with the same no-cache rule as the home page."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(_NO_CACHE)
+        return response
+
+
 if (HERE / "static").exists():
-    app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
+    app.mount("/static", _NoCacheStaticFiles(directory=str(HERE / "static")), name="static")
 
 
 def main() -> None:
