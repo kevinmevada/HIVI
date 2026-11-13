@@ -12,7 +12,7 @@ milestone plan in `docs/CORE_INTEGRATION_SPINE.md`.
 | Piece | Where | What it does |
 |-------|-------|--------------|
 | Chat control server | `interfaces/hivi-chat/server.py` | Model picker, starts/stops one backend on `:8080`, OpenAI-compatible proxy on `:7860/v1` |
-| HAIE planner | `interfaces/hivi-chat/haie/` | Per-message intent → sampling params (fast regex → heuristic → LLM classify) |
+| HAIE planner | `interfaces/hivi-chat/haie/` | Per-message intent → sampling params using fast rules by default; optional LLM classification for ambiguous requests |
 | A1 router | `interfaces/hivi-chat/routing/` | Suggests a better-suited model for a prompt (UI shows a "Switch" hint) |
 | Vision | registry + runtime + UI | Models with an `mmproj*.gguf` beside them load in llama.cpp with `--mmproj`; the UI's **Image** button sends pictures |
 | Memory gateway | `:7860/memory/v1` | Hindsight's LLM endpoint; waits out model switches instead of failing |
@@ -27,6 +27,7 @@ Not built yet: agent workforce, project/task database, security layer, superviso
 HIVI/
 ├── configs/                 # storage.yaml sets models_root / data_root
 ├── docs/                    # audit, milestones, BACKENDS.md
+├── interfaces/hivi-desktop/ # single-window desktop launcher
 ├── interfaces/hivi-chat/    # control server, UI, HAIE, router
 ├── scripts/                 # bootstrap, benchmarks, fetch_backends.ps1, launchers
 ├── src/hivi/
@@ -53,16 +54,39 @@ Point HIVI at your binaries and models if they are not in the defaults:
 | `HIVI_LLAMA_SERVER` | `data/P1_1/runtime/llama.cpp/bin/llama-server.exe`, else PATH |
 | `HIVI_COLI` | `src/hivi/inference/colibri-LLM-main/c/coli` |
 | `HIVI_BACKEND_PORT` | `8080` |
+| `HIVI_HAIE_SEMANTIC` | Off; set to `1` to enable the extra LLM intent-classification call |
+| `HIVI_SCAN_TTL_S` | `10` seconds for the model-library scan cache |
 
 Full list: `docs/BACKENDS.md`. Nothing in the code refers to a specific user's
 home folder.
+
+### HAIE behavior
+
+HAIE classifies each message locally with rule-based matching by default, so a
+second model request is not required before the actual reply. It recognizes
+coding, architecture, math, research, explanation, writing, brainstorming,
+greetings and chat, and carries short follow-ups such as "make it async" from
+the previous user request. Set `HIVI_HAIE_SEMANTIC=1` when you prefer the
+optional semantic LLM classifier for ambiguous prompts.
 
 ## Run
 
 ```powershell
 .\scripts\hivi_ui.ps1        # chat UI on http://127.0.0.1:7860
 .\scripts\start_hindsight.ps1  # after the UI is up, so it uses the memory gateway
+uv run python interfaces/hivi-desktop/hivi_app.py  # desktop window / app-style browser fallback
 ```
+
+The desktop launcher reuses a running HIVI server, or starts and stops one for
+the lifetime of its window. On Windows, use the **HIVI** shortcut on the
+desktop after creating it once:
+
+```powershell
+.\scripts\install_hivi_shortcut.ps1
+```
+
+Pin the **HIVI** shortcut itself to the taskbar. Do not pin the running
+Python window; Windows uses the Python host icon for script-launched windows.
 
 HIVI only stops processes it started (tracked in `data/run/hivi_backend.json`).
 If something else already holds `:8080`, loading a model fails with the PID
