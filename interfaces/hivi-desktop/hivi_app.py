@@ -16,7 +16,9 @@ Logs: data/run/hivi_desktop.log (this app) and data/run/hivi_desktop_server.log 
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
+import inspect
 import json
 import logging
 import os
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,6 +36,7 @@ ROOT = HERE.parents[1]
 CHAT_DIR = ROOT / "interfaces" / "hivi-chat"
 ICON = HERE / "hivi.ico"
 TITLE = "HIVI"
+APP_ID = "HIVI.Desktop"  # Windows AppUserModelID: groups the window, pins and shortcuts
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HIVI_PORT", "7860") or 7860)
 URL = f"http://{HOST}:{PORT}"
@@ -269,9 +273,106 @@ def set_app_identity() -> None:
         shell32 = ctypes.WinDLL("shell32", use_last_error=True)
         shell32.SetCurrentProcessExplicitAppUserModelID.argtypes = [ctypes.c_wchar_p]
         shell32.SetCurrentProcessExplicitAppUserModelID.restype = ctypes.c_ulong
-        shell32.SetCurrentProcessExplicitAppUserModelID("HIVI.Desktop")
+        shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     except (OSError, ctypes.ArgumentError) as e:
         log.info("app identity: %s", e)
+
+
+def app_launcher() -> str:
+    """pythonw.exe that runs this app: no console window, same environment."""
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe":
+        return str(exe)
+    venv_w = ROOT / ".venv" / "Scripts" / "pythonw.exe"
+    if venv_w.exists():
+        return str(venv_w)
+    if exe.with_name("pythonw.exe").exists():
+        return str(exe.with_name("pythonw.exe"))
+    return str(exe)
+
+
+def relaunch_command() -> str:
+    return f'"{app_launcher()}" "{HERE / "hivi_app.py"}"'
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def parse(cls, text: str) -> _GUID:
+        u = uuid.UUID(text)
+        return cls(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+
+
+class _PROPERTYKEY(ctypes.Structure):
+    _fields_ = [("fmtid", _GUID), ("pid", ctypes.c_uint32)]
+
+
+class _PROPVARIANT(ctypes.Structure):  # VT_LPWSTR only; same size as the real union
+    _fields_ = [
+        ("vt", ctypes.c_ushort),
+        ("r1", ctypes.c_ushort),
+        ("r2", ctypes.c_ushort),
+        ("r3", ctypes.c_ushort),
+        ("pwszVal", ctypes.c_wchar_p),
+        ("pad", ctypes.c_void_p),
+    ]
+
+
+_IID_IPROPERTYSTORE = "886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"
+_FMTID_APPUSERMODEL = "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"
+_PID_RELAUNCH_COMMAND, _PID_RELAUNCH_ICON, _PID_RELAUNCH_NAME, _PID_APP_ID = 2, 3, 4, 5
+
+
+def set_window_identity(hwnd: int) -> bool:
+    """Tell the taskbar what a pin of this window is: HIVI's name, icon and launch command.
+
+    Without this, pinning the open window pins pythonw.exe — Python's icon, and clicking
+    it doesn't start HIVI. Uses the window's shell property store (Windows 7+).
+    """
+    if not IS_WIN or not hwnd:
+        return False
+    ole32 = ctypes.WinDLL("ole32")
+    shell32 = ctypes.WinDLL("shell32")
+    ole32.CoInitialize(None)  # this thread may not have COM yet; harmless if it does
+    shell32.SHGetPropertyStoreForWindow.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_GUID),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetPropertyStoreForWindow.restype = ctypes.HRESULT
+    store = ctypes.c_void_p()
+    iid = _GUID.parse(_IID_IPROPERTYSTORE)
+    shell32.SHGetPropertyStoreForWindow(
+        ctypes.c_void_p(hwnd), ctypes.byref(iid), ctypes.byref(store)
+    )
+    vtbl = ctypes.cast(store, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    set_value = ctypes.WINFUNCTYPE(
+        ctypes.HRESULT, ctypes.c_void_p, ctypes.POINTER(_PROPERTYKEY), ctypes.POINTER(_PROPVARIANT)
+    )(vtbl[6])
+    commit = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p)(vtbl[7])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+    fmtid = _GUID.parse(_FMTID_APPUSERMODEL)
+    try:
+        # Relaunch details first, the ID last (the order Windows documents).
+        for pid, value in (
+            (_PID_RELAUNCH_COMMAND, relaunch_command()),
+            (_PID_RELAUNCH_NAME, TITLE),
+            (_PID_RELAUNCH_ICON, f"{ICON},0"),
+            (_PID_APP_ID, APP_ID),
+        ):
+            key = _PROPERTYKEY(fmtid, pid)
+            var = _PROPVARIANT(vt=31, pwszVal=value)  # VT_LPWSTR; the store copies it
+            set_value(store, ctypes.byref(key), ctypes.byref(var))
+        commit(store)
+    finally:
+        release(store)
+    return True
 
 
 def set_folder_icon() -> None:
@@ -286,7 +387,9 @@ def set_folder_icon() -> None:
             check=False,
         )
         if result.returncode:
-            log.info("folder icon: attrib returned %s: %s", result.returncode, result.stderr.strip())
+            log.info(
+                "folder icon: attrib returned %s: %s", result.returncode, result.stderr.strip()
+            )
         result = subprocess.run(
             ["attrib", "+h", "+s", str(HERE / "desktop.ini")],
             capture_output=True,
@@ -294,7 +397,11 @@ def set_folder_icon() -> None:
             check=False,
         )
         if result.returncode:
-            log.info("desktop.ini attributes: attrib returned %s: %s", result.returncode, result.stderr.strip())
+            log.info(
+                "desktop.ini attributes: attrib returned %s: %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
     except OSError as e:
         log.info("folder icon: %s", e)
 
@@ -317,7 +424,7 @@ def focus_existing() -> bool:
 
 
 def set_window_icon() -> None:
-    """pywebview can't set the window icon on Windows, so set it directly."""
+    """Backup for the window icon, in case the window was created before it was set."""
     if not IS_WIN or not ICON.exists():
         return
     try:
@@ -353,34 +460,138 @@ def message(text: str) -> None:
 # Screens shown before the chat UI loads
 # --------------------------------------------------------------------------- #
 
-_PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-html,body{{margin:0;height:100%;background:#0B1220;color:#DCE6F2;
-  font-family:"Segoe UI",system-ui,sans-serif;display:grid;place-items:center;overflow:hidden}}
-.wrap{{text-align:center;max-width:520px;padding:24px}}
-.orb{{width:96px;height:96px;margin:0 auto 28px;border-radius:50%;
-  background:radial-gradient(circle at 38% 34%,#CCFBF1 0%,#2DD4BF 42%,#2563EB 100%);
-  box-shadow:0 0 0 2px rgba(94,234,212,.35),0 0 48px rgba(45,212,191,.45);
-  animation:breathe 2.4s ease-in-out infinite}}
-.orb.err{{background:radial-gradient(circle at 38% 34%,#FED7AA 0%,#F97316 50%,#9A3412 100%);
-  box-shadow:0 0 0 2px rgba(251,146,60,.35),0 0 40px rgba(249,115,22,.35);animation:none}}
-h1{{font-weight:600;font-size:22px;letter-spacing:.06em;margin:0 0 10px}}
-p{{margin:0;color:#8EA0B5;font-size:14px;line-height:1.55;white-space:pre-wrap}}
-@keyframes breathe{{0%,100%{{transform:scale(1);opacity:.9}}50%{{transform:scale(1.08);opacity:1}}}}
-@media (prefers-reduced-motion:reduce){{.orb{{animation:none}}}}
-</style></head><body><div class="wrap"><div class="orb {cls}"></div><h1>{title}</h1>
-<p id="status">{text}</p></div>
-<script>function setStatus(t){{document.getElementById('status').textContent=t}}</script>
+# Same look as HIVI's home page (interfaces/hivi-chat/index.html): Apple-style black / white
+# background, the HIVI wordmark with its colour wave, and the bunny mark from the shared
+# interfaces/hivi-chat/static/brand/brand.css (so both screens always match).
+# Intro: the bunny pops in, then HIVI slides out to its right. Outro (hiviOutro, called when HIVI
+# is ready): everything fades up and out, and the home page picks up with its own entrance.
+# Placeholders use str.replace, so CSS braces stay as they are.
+BRAND_DIR = CHAT_DIR / "static" / "brand"
+BUNNY_PARTS = ("outline", "fur", "inner_ears", "face", "blush", "blush_highlight")
+
+_PAGE = """<!DOCTYPE html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,500;14..32,700&display=swap" rel="stylesheet">
+<style>__BRAND_CSS__</style><style>
+html,body{margin:0;height:100%}
+.hv{--bg:#fff;--label:#1d1d1f;--label-2:rgba(60,60,67,.72);--label-3:rgba(60,60,67,.42);--red:#ff3b30;
+  --c1:#f08a2a;--c2:#f0475a;--c3:#d4519e;--c4:#8a4fe0;--c5:#4f63ff;--sheen:rgba(255,255,255,.6);
+  --halo-op:.45;--bloom-op:.3;--ease:cubic-bezier(.32,.72,0,1);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --font-display:-apple-system,BlinkMacSystemFont,"SF Pro Display","Inter","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  height:100%;display:grid;place-items:center;background:var(--bg);color:var(--label);font-family:var(--font);
+  -webkit-font-smoothing:antialiased;overflow:hidden;user-select:none}
+@media (prefers-color-scheme:dark){.hv{--bg:#000;--label:#f5f5f7;--label-2:rgba(235,235,245,.66);
+  --label-3:rgba(235,235,245,.36);--red:#ff453a;--c1:#ffba71;--c2:#ff6778;--c3:#f5b9ea;--c4:#bc82f3;
+  --c5:#8d9fff;--sheen:rgba(255,255,255,.7);--halo-op:.6;--bloom-op:.5}}
+.col{display:flex;flex-direction:column;align-items:center;text-align:center;padding:24px;max-width:560px}
+.lockup{display:flex;align-items:center;font-size:78px}
+.lockup .hb{font-size:1.18em;animation:hb-wave var(--hb-speed) linear infinite,hb-in .75s cubic-bezier(.34,1.56,.64,1) both}
+.wrap{display:block;max-width:0;animation:grow .8s .62s var(--ease) forwards}
+.wordmark{--spectrum-wave:repeating-linear-gradient(90deg,var(--c1) calc(var(--p) + 0%),var(--c2) calc(var(--p) + 25%),
+  var(--c3) calc(var(--p) + 50%),var(--c4) calc(var(--p) + 75%),var(--c5) calc(var(--p) + 100%),
+  var(--c4) calc(var(--p) + 125%),var(--c3) calc(var(--p) + 150%),var(--c2) calc(var(--p) + 175%),
+  var(--c1) calc(var(--p) + 200%));
+  display:block;width:max-content;position:relative;isolation:isolate;margin-left:.22em;font-family:var(--font-display);
+  font-weight:700;font-size:1em;line-height:1;letter-spacing:-.045em;padding:0 .05em .06em;color:transparent;
+  -webkit-text-fill-color:transparent;background-image:repeating-linear-gradient(105deg,transparent calc(var(--p)*1.5 + 0%),
+  transparent calc(var(--p)*1.5 + 38%),var(--sheen) calc(var(--p)*1.5 + 50%),transparent calc(var(--p)*1.5 + 62%),
+  transparent calc(var(--p)*1.5 + 300%)),var(--spectrum-wave);-webkit-background-clip:text;background-clip:text;
+  animation:wave 2s linear infinite,word-in .8s .62s var(--ease) both}
+.wordmark::before,.wordmark::after{content:attr(data-text);position:absolute;inset:0;z-index:-1;padding:inherit;
+  background-image:var(--spectrum-wave);-webkit-background-clip:text;background-clip:text;color:transparent;
+  -webkit-text-fill-color:transparent;pointer-events:none}
+.wordmark::before{filter:blur(8px) saturate(1.2);opacity:var(--halo-op)}
+.wordmark::after{filter:blur(26px) saturate(1.3);opacity:var(--bloom-op);transform:scale(1.06)}
+.status{margin-top:24px;font-size:15px;font-weight:500;letter-spacing:-.01em;min-height:22px;color:transparent;
+  background:linear-gradient(90deg,var(--label-3) 0%,var(--label-3) 35%,var(--label) 50%,var(--label-3) 65%,
+  var(--label-3) 100%);background-size:300% 100%;-webkit-background-clip:text;background-clip:text;
+  animation:shimmer 1.8s linear infinite,arrive .6s 1.3s var(--ease) both}
+.sub{margin-top:6px;font-size:12px;color:var(--label-3);font-variant-numeric:tabular-nums;white-space:pre-wrap;
+  animation:arrive .6s 1.4s var(--ease) both}
+.hv.out .lockup{animation:lock-out .55s .08s var(--ease) forwards}
+.hv.out .status,.hv.out .sub{animation:fade-out .25s ease forwards}
+.hv.err .lockup .hb{animation:hb-wave var(--hb-speed) linear infinite;animation-play-state:paused}
+.hv.err .wrap{max-width:none;animation:none}
+.hv.err .wordmark{animation:wave 2s linear infinite;animation-play-state:paused}
+.hv.err .status{color:var(--red);background:none;animation:arrive .4s var(--ease) both}
+.hv.err .sub{color:var(--label-2);font-size:13px;line-height:1.5;user-select:text;animation:arrive .4s .05s var(--ease) both}
+@keyframes wave{to{--p:200%}}
+@keyframes shimmer{from{background-position:100% 0}to{background-position:0% 0}}
+@keyframes arrive{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes hb-in{from{opacity:0;transform:scale(.35) rotate(-14deg)}55%{opacity:1}to{opacity:1;transform:none}}
+@keyframes grow{to{max-width:var(--w,4em)}}
+@keyframes word-in{from{opacity:0;transform:translateX(-14px);filter:blur(6px);clip-path:inset(-80% 100% -80% -20%)}
+  to{opacity:1;transform:none;filter:none;clip-path:inset(-80% -80% -80% -20%)}}
+@keyframes lock-out{to{opacity:0;transform:scale(1.05);filter:blur(6px)}}
+@keyframes fade-out{to{opacity:0;transform:translateY(-4px)}}
+@media (prefers-reduced-motion:reduce){.hv *,.hv *::before,.hv *::after{animation-duration:1ms!important;
+  animation-delay:0s!important;animation-iteration-count:1!important}.status{color:var(--label-2)}}
+</style></head><body><div class="hv __STATE__"><div class="col">
+<div class="lockup">__BUNNY__<div class="wrap" id="wrap"><div class="wordmark" id="word" data-text="HIVI">HIVI</div></div></div>
+<div class="status" id="status">__TEXT__</div>
+<div class="sub" id="sub">__SUB__</div>
+</div></div>
+<script>
+(function(){var wrap=document.getElementById('wrap'),word=document.getElementById('word');
+ function size(){wrap.style.setProperty('--w',(word.offsetWidth+parseFloat(getComputedStyle(word).marginLeft))+'px')}
+ size();if(document.fonts)document.fonts.ready.then(size);})();
+var reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+window.__introDone=false;window.__outroDone=false;
+setTimeout(function(){window.__introDone=true},reduce?0:1600);
+function setStatus(t){document.getElementById('status').textContent=t}
+function hiviOutro(){
+ if(!window.__introDone){setTimeout(hiviOutro,80);return true}
+ document.querySelector('.hv').classList.add('out');
+ setTimeout(function(){window.__outroDone=true},reduce?0:650);return true}
+</script>
 </body></html>"""
 
 
+def _data_uri(path: Path, mime: str = "image/png") -> str:
+    try:
+        return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    except OSError:
+        return ""
+
+
+def _bunny_html() -> str:
+    """The shared bunny mark, with its part masks embedded (the page isn't served from HIVI)."""
+    masks = {p: _data_uri(BRAND_DIR / "parts" / f"{p}.png") for p in BUNNY_PARTS}
+    if not all(masks.values()):  # brand files missing: fall back to the plain icon
+        return f'<img class="hb" alt="" style="width:1.18em;height:1.18em" src="{_data_uri(ICON, "image/x-icon")}">'
+    style = ";".join(f"--hb-m-{p}:url({uri})" for p, uri in masks.items())
+    layers = "".join(
+        f'<i class="hb-l hb-{p}{" hb-hivi" if p == "blush_highlight" else ""}"></i>'
+        for p in BUNNY_PARTS
+    )
+    return f'<span class="hb" aria-hidden="true" style="{style}">{layers}</span>'
+
+
+def _brand_css() -> str:
+    try:
+        return (BRAND_DIR / "brand.css").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _page(state: str, text: str, sub: str) -> str:
+    import html
+
+    return (
+        _PAGE.replace("__BRAND_CSS__", _brand_css())
+        .replace("__STATE__", state)
+        .replace("__BUNNY__", _bunny_html())
+        .replace("__TEXT__", html.escape(text))
+        .replace("__SUB__", html.escape(sub))
+    )
+
+
 def splash_html() -> str:
-    return _PAGE.format(cls="", title="HIVI", text="Waking up…")
+    return _page("", "Waking up…", "Running locally on this PC")
 
 
 def error_html(text: str) -> str:
-    import html
-
-    return _PAGE.format(cls="err", title="HIVI couldn't start", text=html.escape(text))
+    return _page("err", "HIVI couldn't start", text)
 
 
 # --------------------------------------------------------------------------- #
@@ -400,12 +611,42 @@ FIX_WEBVIEW2 = (
 )
 
 
+def system_dark() -> bool:
+    """Windows app theme, so the window opens in the same colour as the page."""
+    if not IS_WIN:
+        return True
+    try:
+        import winreg
+
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        )
+        value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return value == 0
+    except OSError:
+        return True
+
+
 def have_webview() -> bool:
     try:
         import webview  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+def play_outro(window, timeout: float = 5.0) -> None:
+    """Let the start-up screen finish its intro and play its outro before the home page loads."""
+    try:
+        window.evaluate_js("hiviOutro()")
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if window.evaluate_js("window.__outroDone === true"):
+                return
+            time.sleep(0.08)
+    except Exception as e:  # noqa: BLE001 - never block HIVI on an animation
+        log.debug("outro skipped: %s", e)
 
 
 def run_window(owned: list) -> None:
@@ -416,8 +657,9 @@ def run_window(owned: list) -> None:
         html=splash_html(),
         width=1280,
         height=860,
+        fullscreen=True,
         min_size=(900, 600),
-        background_color="#0B1220",
+        background_color="#000000" if system_dark() else "#FFFFFF",
     )
 
     def status(msg: str) -> None:
@@ -434,12 +676,23 @@ def run_window(owned: list) -> None:
             log.error("%s", e)
             window.load_html(error_html(str(e)))
             return
+        play_outro(window)
         window.load_url(URL)
 
-    window.events.shown += set_window_icon
+    def on_shown() -> None:
+        set_window_icon()
+        try:
+            set_window_identity(_find_window())
+        except Exception as e:  # noqa: BLE001 - pinning metadata is cosmetic, never fatal
+            log.info("taskbar identity: %s", e)
+
+    window.events.shown += on_shown
     # Force WebView2 on Windows: never fall back to the old Internet Explorer engine.
     gui = "edgechromium" if IS_WIN else None
-    webview.start(boot, gui=gui, private_mode=False, storage_path=str(run_dir() / "webview"))
+    opts = {"gui": gui, "private_mode": False, "storage_path": str(run_dir() / "webview")}
+    if "icon" in inspect.signature(webview.start).parameters:  # pywebview >= 6.2 on Windows
+        opts["icon"] = str(ICON)  # window + taskbar icon
+    webview.start(boot, **opts)
 
 
 def main(argv: list[str] | None = None) -> int:

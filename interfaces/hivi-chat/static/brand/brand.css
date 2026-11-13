@@ -1,0 +1,105 @@
+/* HIVI bunny mark — shared by the home page (index.html) and the desktop start-up screen.
+   Each part of the bunny is its own layer (masks in parts/, made by scripts/brand/split_bunny.py).
+   A part is either a two-colour wave (--hb-<part>-a → --hb-<part>-b) or the HIVI spectrum wave
+   (class .hb-hivi on the layer). All parts share the wordmark's moving sheen; the mark has its own
+   speed (--hb-speed). Colours chosen in the bunny picker:
+     Fur #000 · Inner ears #000 · Blush #e46fb2 · Blush highlight HIVI wave · Outline #fff · 3s */
+
+@property --p {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 0%;
+}
+
+.hb {
+  --hb-speed: 3s;
+  --hb-fur-a: #000000;
+  --hb-fur-b: #000000;
+  --hb-inner_ears-a: #000000;
+  --hb-inner_ears-b: #000000;
+  --hb-blush-a: #e46fb2;
+  --hb-blush-b: #e46fb2;
+  --hb-blush_highlight-a: #ffffff;
+  --hb-blush_highlight-b: #ffffff;
+  --hb-outline-a: #ffffff;
+  --hb-outline-b: #ffffff;
+  --hb-face: #ffffff;
+  --hb-sheen: rgba(255, 255, 255, 0.7);
+  --hb-glow: rgba(255, 255, 255, 0.22);
+  --hb-m-fur: url("/static/brand/parts/fur.png");
+  --hb-m-inner_ears: url("/static/brand/parts/inner_ears.png");
+  --hb-m-outline: url("/static/brand/parts/outline.png");
+  --hb-m-face: url("/static/brand/parts/face.png");
+  --hb-m-blush: url("/static/brand/parts/blush.png");
+  --hb-m-blush_highlight: url("/static/brand/parts/blush_highlight.png");
+  /* the page's HIVI spectrum, with the home page's own colours as fallback */
+  --hb-wave: repeating-linear-gradient(90deg,
+      var(--c1, #ffba71) calc(var(--p) + 0%), var(--c2, #ff6778) calc(var(--p) + 25%),
+      var(--c3, #f5b9ea) calc(var(--p) + 50%), var(--c4, #bc82f3) calc(var(--p) + 75%),
+      var(--c5, #8d9fff) calc(var(--p) + 100%), var(--c4, #bc82f3) calc(var(--p) + 125%),
+      var(--c3, #f5b9ea) calc(var(--p) + 150%), var(--c2, #ff6778) calc(var(--p) + 175%),
+      var(--c1, #ffba71) calc(var(--p) + 200%));
+  --hb-sheen-g: repeating-linear-gradient(105deg,
+      transparent calc(var(--p) * 1.5 + 0%), transparent calc(var(--p) * 1.5 + 38%),
+      var(--hb-sheen) calc(var(--p) * 1.5 + 50%), transparent calc(var(--p) * 1.5 + 62%),
+      transparent calc(var(--p) * 1.5 + 300%));
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  vertical-align: middle;
+  filter: drop-shadow(0 0 0.06em var(--hb-glow)) drop-shadow(0 0 0.22em var(--hb-glow));
+  animation: hb-wave var(--hb-speed) linear infinite;
+}
+
+@media (prefers-color-scheme: light) {
+  .hb {
+    --hb-sheen: rgba(255, 255, 255, 0.6);
+    --hb-glow: rgba(0, 0, 0, 0.14);
+  }
+}
+
+.hb-l {
+  position: absolute;
+  inset: 0;
+  -webkit-mask: var(--m) center / contain no-repeat;
+  mask: var(--m) center / contain no-repeat;
+}
+
+.hb-outline { --m: var(--hb-m-outline); --a: var(--hb-outline-a); --b: var(--hb-outline-b); }
+.hb-fur { --m: var(--hb-m-fur); --a: var(--hb-fur-a); --b: var(--hb-fur-b); }
+.hb-inner_ears { --m: var(--hb-m-inner_ears); --a: var(--hb-inner_ears-a); --b: var(--hb-inner_ears-b); }
+.hb-blush { --m: var(--hb-m-blush); --a: var(--hb-blush-a); --b: var(--hb-blush-b); }
+.hb-blush_highlight { --m: var(--hb-m-blush_highlight); --a: var(--hb-blush_highlight-a); --b: var(--hb-blush_highlight-b); }
+
+.hb-outline,
+.hb-fur,
+.hb-inner_ears,
+.hb-blush,
+.hb-blush_highlight {
+  background-image: var(--hb-sheen-g),
+    repeating-linear-gradient(90deg, var(--a) calc(var(--p) + 0%), var(--b) calc(var(--p) + 50%),
+      var(--a) calc(var(--p) + 100%));
+}
+
+.hb-l.hb-hivi {
+  background-image: var(--hb-sheen-g), var(--hb-wave);
+}
+
+.hb-face {
+  --m: var(--hb-m-face);
+  background-image: var(--hb-sheen-g), linear-gradient(var(--hb-face), var(--hb-face));
+}
+
+@keyframes hb-wave {
+  to {
+    --p: 200%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb {
+    animation: none;
+  }
+}
