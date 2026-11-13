@@ -1,11 +1,30 @@
 # HIVI
 
+<p align="center">
+  <img src="interfaces/hivi-chat/static/brand/bunny.png" width="72" alt="HIVI bunny mark">
+  <br>
+  <strong>H I V I</strong>
+  <br>
+  <sub>Local intelligence · memory · execution</sub>
+</p>
+
 Local AI workbench for an 8 GB-VRAM laptop: a portable model library, a chat
 UI that runs GGUF models on Colibrì or llama.cpp, and a project memory layer
 (Hindsight + SQLite ledger + LangGraph) that survives restarts.
 
 Honest status lives in `docs/ARCHITECTURE_COMPLETENESS_AUDIT.md` and the
 milestone plan in `docs/CORE_INTEGRATION_SPINE.md`.
+
+## Brand
+
+HIVI's interface uses a clean system sans-serif stack: **SF Pro Display /
+Inter / Segoe UI Variable Display / Segoe UI** for headings and the matching
+text stack for body copy. The bunny is HIVI's primary symbol; the wordmark is
+set in a bold display face with a warm-to-violet spectrum wave and soft glow.
+Use the existing assets in
+[`interfaces/hivi-chat/static/brand/`](interfaces/hivi-chat/static/brand)
+when extending the UI so the symbol, typography, and color treatment stay
+consistent.
 
 ## What runs today
 
@@ -88,6 +107,12 @@ desktop after creating it once:
 Pin the **HIVI** shortcut itself to the taskbar. Do not pin the running
 Python window; Windows uses the Python host icon for script-launched windows.
 
+The desktop app starts the server and window in parallel, shows startup
+progress, and enforces a single running HIVI window. Closing the window stops
+only processes HIVI started; an unrelated process already using `:8080` is
+left untouched. To keep the server running after closing the desktop window,
+launch the app with `--keep-running`.
+
 HIVI only stops processes it started (tracked in `data/run/hivi_backend.json`).
 If something else already holds `:8080`, loading a model fails with the PID
 instead of killing it.
@@ -96,6 +121,7 @@ instead of killing it.
 
 ```powershell
 pytest                       # offline suite (live tests skip without :8080/:8888)
+pytest tests/desktop/test_hivi_app.py  # desktop launcher tests only
 .\scripts\run_project_room_e2e.ps1   # live ProjectRoom against real inference + Hindsight
 ```
 

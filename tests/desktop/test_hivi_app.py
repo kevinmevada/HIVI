@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import socket
+import time
 from pathlib import Path
 
 import pytest
@@ -81,7 +82,7 @@ def test_fullscreen_api_toggles_the_window(app):
 
     window = Window()
     api = app.FullscreenApi()
-    api.window = window
+    api._window = window
     assert api.toggle_fullscreen() is False
     assert api.toggle_fullscreen() is True
     assert window.toggles == 2
@@ -107,7 +108,9 @@ def test_starts_and_stops_the_real_server(app):
     try:
         assert owned[0] is not None and app.hivi_running()
     finally:
+        t0 = time.monotonic()
         app.stop_owned(owned[0])
+        assert time.monotonic() - t0 < 5, "closing HIVI must not hang"
     assert owned[0].poll() is not None
     assert not app.hivi_running(0.5)
 
@@ -178,3 +181,25 @@ def test_outro_never_blocks_startup(app):
             raise RuntimeError("window closed")
 
     app.play_outro(Broken(), timeout=1)  # must not raise
+
+
+def test_page_api_exposes_only_the_fullscreen_toggle(app):
+    """pywebview walks every public attribute of js_api; a public window object froze HIVI."""
+    public = [n for n in dir(app.FullscreenApi()) if not n.startswith("_")]
+    assert public == ["toggle_fullscreen"]
+
+
+def test_closed_window_never_starts_a_server(app, monkeypatch):
+    monkeypatch.setattr(app, "hivi_running", lambda timeout=1.5: False)
+    monkeypatch.setattr(app, "stop_stale_hivi", lambda: None)
+    monkeypatch.setattr(app, "start_server", lambda: pytest.fail("must not start"))
+    with pytest.raises(app.StartupError, match="cancelled"):
+        app.ensure_server([None], cancelled=lambda: True)
+
+
+def test_reopening_waits_for_a_closing_hivi_instead_of_refusing(app, monkeypatch):
+    answers = iter([False, False, True])  # still closing, still closing, free
+    monkeypatch.setattr(app, "single_instance", lambda: next(answers))
+    monkeypatch.setattr(app, "focus_existing", lambda: False)
+    monkeypatch.setattr(app.time, "sleep", lambda _s: None)
+    assert app.claim_instance(wait_s=5) == "ok"

@@ -25,6 +25,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import uuid
@@ -97,16 +98,6 @@ def port_in_use() -> bool:
         return s.connect_ex((HOST, PORT)) == 0
 
 
-def _post(path: str, timeout: float) -> None:
-    req = urllib.request.Request(
-        f"{URL}{path}", data=b"{}", method="POST", headers={"Content-Type": "application/json"}
-    )
-    try:
-        urllib.request.urlopen(req, timeout=timeout).read()
-    except OSError as e:  # stopping is best-effort; the process tree is killed after
-        log.info("POST %s: %s", path, e)
-
-
 def _kill_tree(pid: int) -> None:
     import psutil
 
@@ -150,32 +141,68 @@ def _is_hivi_server(p) -> bool:
         return False
 
 
-def stop_stale_hivi() -> None:
-    """Same clean-up as scripts/hivi_ui.ps1 — only processes HIVI itself started."""
+def _recorded_processes() -> list:
+    """Model backend and side services HIVI recorded in data/run (only if they still look like ours)."""
     import psutil
 
-    me = os.getpid()
-    for p in psutil.process_iter(["pid", "cmdline"]):
-        if p.info["pid"] != me and _is_hivi_server(p):
-            log.info("stopping a previous HIVI server (PID %s)", p.info["pid"])
-            _kill_tree(p.info["pid"])
+    procs = []
     rd = run_dir()
     for f in [*rd.glob("hivi_backend.json"), *rd.glob("hivi_aux_*.json")]:
         try:
-            rec = json.loads(f.read_text(encoding="utf-8"))
-            pid = int(rec.get("pid") or 0)
+            pid = int(json.loads(f.read_text(encoding="utf-8")).get("pid") or 0)
             # Guard against PID reuse after a reboot: only stop it if it still looks like ours.
             if pid and psutil.pid_exists(pid):
-                name = psutil.Process(pid).name().lower()
-                if any(k in name for k in ("llama-server", "python", "coli")):
-                    log.info("stopping a HIVI-owned process (PID %s, %s)", pid, name)
-                    _kill_tree(pid)
+                p = psutil.Process(pid)
+                if any(k in p.name().lower() for k in ("llama-server", "python", "coli")):
+                    procs.append(p)
         except (OSError, ValueError, psutil.Error):
             pass
         try:
             f.unlink()
         except OSError:
             pass
+    return procs
+
+
+def _stop_all(procs: list, grace: float = 3.0) -> None:
+    """Stop processes and everything they started, all at once (not one after another)."""
+    import psutil
+
+    victims: dict[int, psutil.Process] = {}
+    for p in procs:
+        if p is None:
+            continue
+        try:
+            for c in [p, *p.children(recursive=True)]:  # list children before anything dies
+                victims[c.pid] = c
+        except psutil.Error:
+            pass
+    for p in victims.values():
+        try:
+            p.terminate()  # on Windows this ends the process immediately
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(list(victims.values()), timeout=grace)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+
+
+def stop_stale_hivi() -> None:
+    """Same clean-up as scripts/hivi_ui.ps1 — only processes HIVI itself started."""
+    import psutil
+
+    me = os.getpid()
+    stale = [
+        p
+        for p in psutil.process_iter(["pid", "cmdline"])
+        if p.info["pid"] != me and _is_hivi_server(p)
+    ]
+    for p in stale:
+        log.info("stopping a previous HIVI server (PID %s)", p.pid)
+    _stop_all(stale + _recorded_processes())
 
 
 def start_server() -> subprocess.Popen:
@@ -212,7 +239,11 @@ def wait_ready(
     return False
 
 
-def ensure_server(owned: list, status: Callable[[str], None] = lambda _m: None) -> None:
+def ensure_server(
+    owned: list,
+    status: Callable[[str], None] = lambda _m: None,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> None:
     """Make sure HIVI answers on URL. A server this app starts is put in owned[0]."""
     if hivi_running():
         status("Connecting to HIVI…")
@@ -227,13 +258,26 @@ def ensure_server(owned: list, status: Callable[[str], None] = lambda _m: None) 
                 f"Port {PORT} is used by another program.\n"
                 "Close it, or set HIVI_PORT to a free port."
             )
+    if cancelled():
+        raise StartupError("cancelled")
     status("Starting HIVI…")
     proc = start_server()
     owned[0] = proc
     t0 = time.monotonic()
-    ok = wait_ready(
-        proc, START_TIMEOUT_S, tick=lambda: status(f"Starting HIVI… {int(time.monotonic() - t0)}s")
-    )
+
+    def tick() -> None:
+        if cancelled():
+            _raise_cancelled()
+        status(f"Starting HIVI… {int(time.monotonic() - t0)}s")
+
+    try:
+        ok = wait_ready(proc, START_TIMEOUT_S, tick=tick)
+        if ok and cancelled():  # came up just as the window closed
+            _raise_cancelled()
+    except StartupError:
+        _stop_all([psutil_process(proc.pid)])
+        owned[0] = None
+        raise
     if not ok:
         code = proc.poll()
         _kill_tree(proc.pid)
@@ -243,12 +287,35 @@ def ensure_server(owned: list, status: Callable[[str], None] = lambda _m: None) 
     log.info("HIVI ready at %s (PID %s)", URL, proc.pid)
 
 
+def psutil_process(pid: int):
+    import psutil
+
+    try:
+        return psutil.Process(pid)
+    except psutil.Error:
+        return None
+
+
+def _raise_cancelled() -> None:
+    raise StartupError("cancelled")
+
+
 def stop_owned(proc: subprocess.Popen) -> None:
-    log.info("stopping HIVI (PID %s)", proc.pid)
-    if proc.poll() is None:
-        _post("/api/stop", 45)  # model backend (waits for memory requests to finish)
-        _post("/api/aux/stop", 15)  # embedding / reranker side services
-    _kill_tree(proc.pid)
+    """Stop the HIVI this window started: server, model backend, side services. Takes ~1 s.
+
+    No polite /api/stop: it waits for in-flight memory requests (up to minutes), and nothing is
+    lost by ending a local server whose window is gone. The OS frees the GPU memory at once.
+    """
+    import psutil
+
+    t0 = time.monotonic()
+    procs = _recorded_processes()
+    try:
+        procs.insert(0, psutil.Process(proc.pid))
+    except psutil.Error:
+        pass
+    _stop_all(procs)
+    log.info("HIVI stopped in %.1fs", time.monotonic() - t0)
 
 
 # --------------------------------------------------------------------------- #
@@ -261,8 +328,30 @@ def single_instance() -> bool:
         return True
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateMutexW.restype = ctypes.c_void_p
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
     _MUTEX[0] = k32.CreateMutexW(None, False, "Local\\HIVI.Desktop")
-    return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
+    if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+        return True
+    k32.CloseHandle(_MUTEX[0])  # don't keep the other instance's mutex alive
+    _MUTEX[0] = None
+    return False
+
+
+def claim_instance(wait_s: float = 15.0) -> str:
+    """'ok' to start, 'focused' if a HIVI window was brought forward, 'busy' if one is stuck closing.
+
+    A HIVI that is still closing (window gone, processes stopping) is waited for, so opening HIVI
+    right after closing it just works instead of showing an error.
+    """
+    end = time.monotonic() + wait_s
+    while True:
+        if single_instance():
+            return "ok"
+        if focus_existing():
+            return "focused"
+        if time.monotonic() > end:
+            return "busy"
+        time.sleep(0.25)
 
 
 def set_app_identity() -> None:
@@ -376,33 +465,18 @@ def set_window_identity(hwnd: int) -> bool:
 
 
 def set_folder_icon() -> None:
-    """Mark the launcher folder so Explorer uses the HIVI icon from desktop.ini."""
+    """Mark the launcher folder so Explorer uses the HIVI icon from desktop.ini (once, no consoles)."""
     if not IS_WIN or not (HERE / "desktop.ini").exists():
         return
     try:
-        result = subprocess.run(
-            ["attrib", "+s", str(HERE)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode:
-            log.info(
-                "folder icon: attrib returned %s: %s", result.returncode, result.stderr.strip()
-            )
-        result = subprocess.run(
-            ["attrib", "+h", "+s", str(HERE / "desktop.ini")],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode:
-            log.info(
-                "desktop.ini attributes: attrib returned %s: %s",
-                result.returncode,
-                result.stderr.strip(),
-            )
-    except OSError as e:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetFileAttributesW.restype = ctypes.c_uint32
+        hidden, system = 0x2, 0x4
+        for path, want in ((HERE, system), (HERE / "desktop.ini", hidden | system)):
+            attrs = k32.GetFileAttributesW(str(path))
+            if attrs != 0xFFFFFFFF and attrs & want != want:
+                k32.SetFileAttributesW(str(path), attrs | want)
+    except (OSError, AttributeError) as e:
         log.info("folder icon: %s", e)
 
 
@@ -650,20 +724,57 @@ def play_outro(window, timeout: float = 5.0) -> None:
 
 
 class FullscreenApi:
+    """Functions the page can call (F11). Keep state private: pywebview exposes every public
+    attribute to the page and walks into it. A public `window` made it walk the whole native
+    window (thousands of objects, on every page load), which froze HIVI for a long time."""
+
     def __init__(self) -> None:
-        self.window = None
-        self.fullscreen = True
+        self._window = None
+        self._fullscreen = True
 
     def toggle_fullscreen(self) -> bool:
-        if self.window is None:
-            return self.fullscreen
-        self.window.toggle_fullscreen()
-        self.fullscreen = not self.fullscreen
-        return self.fullscreen
+        if self._window is None:
+            return self._fullscreen
+        self._window.toggle_fullscreen()
+        self._fullscreen = not self._fullscreen
+        return self._fullscreen
 
 
-def run_window(owned: list) -> None:
+class ServerStarter(threading.Thread):
+    """Starts HIVI in the background, so the server and the window get ready at the same time."""
+
+    def __init__(self, owned: list) -> None:
+        super().__init__(daemon=True, name="hivi-start")
+        self.owned = owned
+        self.status = "Waking up…"
+        self.error: str | None = None
+        self.cancel = threading.Event()
+        self.done = threading.Event()
+
+    def run(self) -> None:
+        t0 = time.monotonic()
+        try:
+            ensure_server(self.owned, self._set_status, self.cancel.is_set)
+            log.info("HIVI ready after %.1fs", time.monotonic() - t0)
+        except StartupError as e:
+            self.error = str(e)
+        except Exception as e:
+            log.exception("start failed")
+            self.error = f"HIVI couldn't start: {e}"
+        finally:
+            self.done.set()
+
+    def _set_status(self, text: str) -> None:
+        self.status = text
+
+
+def run_window(owned: list, starter: ServerStarter | None = None) -> None:
     import webview
+
+    t0 = time.monotonic()
+    if starter is None:
+        starter = ServerStarter(owned)
+        starter.start()
 
     api = FullscreenApi()
     window = webview.create_window(
@@ -676,7 +787,7 @@ def run_window(owned: list) -> None:
         min_size=(900, 600),
         background_color="#000000" if system_dark() else "#FFFFFF",
     )
-    api.window = window
+    api._window = window
 
     def status(msg: str) -> None:
         try:
@@ -686,14 +797,20 @@ def run_window(owned: list) -> None:
 
     def boot() -> None:
         set_window_icon()
-        try:
-            ensure_server(owned, status)
-        except StartupError as e:
-            log.error("%s", e)
-            window.load_html(error_html(str(e)))
+        log.info("window open after %.1fs", time.monotonic() - t0)
+        shown = None
+        while not starter.done.is_set():
+            if starter.status != shown:
+                shown = starter.status
+                status(shown)
+            starter.done.wait(0.2)
+        if starter.error:
+            log.error("%s", starter.error)
+            window.load_html(error_html(starter.error))
             return
         play_outro(window)
         window.load_url(URL)
+        log.info("home page after %.1fs", time.monotonic() - t0)
 
     def on_shown() -> None:
         set_window_icon()
@@ -728,8 +845,9 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
 
-    if not single_instance():
-        if not focus_existing():
+    claim = claim_instance()
+    if claim != "ok":
+        if claim == "busy":
             message("HIVI is still closing. Try again in a few seconds.")
         return 0
     if not have_webview():
@@ -739,13 +857,17 @@ def main(argv: list[str] | None = None) -> int:
     set_app_identity()
     set_folder_icon()
     owned: list = [None]
+    starter = ServerStarter(owned)
+    starter.start()  # before the window: WebView2 and the server start up in parallel
     try:
-        run_window(owned)
+        run_window(owned, starter)
     except Exception:
         log.exception("app window failed to start")
         message(FIX_WEBVIEW2.format(log=run_dir() / "hivi_desktop.log"))
         return 1
     finally:
+        starter.cancel.set()  # window closed while starting: don't start or keep a server
+        starter.done.wait(2)
         if owned[0] is not None and not args.keep_running:
             stop_owned(owned[0])
     return 0
