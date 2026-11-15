@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -71,9 +73,55 @@ class RuntimeState:
     router: bool = False  # llama-server router mode: models load inside one process
     backend_model: str | None = None  # name to send as "model" (router section id)
     resident: list[str] = field(default_factory=list)  # router models, least recent first
+    timings: dict[str, float] = field(default_factory=dict)  # last switch, seconds per phase
 
 
 STATE = RuntimeState()
+
+# --------------------------------------------------------------------------- #
+# Switch timing: where the seconds of a model switch go
+# --------------------------------------------------------------------------- #
+
+_CLOCK: dict[str, float] | None = None
+_PENDING_WAIT = 0.0
+
+
+def note_switch_wait(seconds: float) -> None:
+    """The server reports how long the switch waited for chat replies to finish."""
+    global _PENDING_WAIT
+    _PENDING_WAIT = max(0.0, float(seconds))
+
+
+@contextmanager
+def _phase(name: str):
+    t = time.perf_counter()
+    try:
+        yield
+    finally:
+        if _CLOCK is not None:
+            _CLOCK[name] = _CLOCK.get(name, 0.0) + time.perf_counter() - t
+
+
+def _timing_summary(t: dict[str, float]) -> str:
+    parts = [f"{k} {v:.1f}s" for k, v in t.items() if k != "total" and v >= 0.05]
+    return f"{t.get('total', 0.0):.1f}s" + (f" ({', '.join(parts)})" if parts else "")
+
+
+def _log_switch(model: ModelEntry, timings: dict[str, float], status: str) -> None:
+    try:
+        rec = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "model": model.id,
+            "engine": STATE.engine,
+            "router": STATE.router,
+            "status": status,
+            "size_gb": getattr(model, "size_gb", None),
+            **{k: round(v, 2) for k, v in timings.items()},
+        }
+        with (_log_dir() / "hivi_switch_times.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
 # Models Colibrì could not import/start this session: they go straight to llama.cpp.
 _COLIBRI_FAILED: dict[str, str] = {}
 
@@ -89,9 +137,30 @@ def _popen_kwargs() -> dict:
     return {"start_new_session": True}
 
 
+def _psutil():
+    try:
+        import psutil  # project dependency; the fallbacks below are for bare installs
+
+        return psutil
+    except Exception:
+        return None
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    ps = _psutil()
+    if ps is not None:
+        # In-process check: no `tasklist` spawn (~0.3-1 s each on Windows), and a
+        # zombie (exited, not yet reaped) counts as gone.
+        try:
+            return ps.Process(pid).status() != ps.STATUS_ZOMBIE
+        except ps.NoSuchProcess:
+            return False
+        except ps.AccessDenied:
+            return True
+        except Exception:
+            pass
     if sys.platform == "win32":
         try:
             out = subprocess.run(
@@ -110,6 +179,15 @@ def _pid_alive(pid: int) -> bool:
 
 def _pid_looks_like_backend(pid: int) -> bool:
     """Pidfile PIDs can be reused after a reboot; only claim llama/python processes."""
+    ps = _psutil()
+    if ps is not None:
+        try:
+            name = ps.Process(pid).name().lower()
+            return any(n in name for n in ("llama-server", "python", "coli"))
+        except ps.NoSuchProcess:
+            return False
+        except Exception:
+            pass
     try:
         if sys.platform == "win32":
             out = subprocess.run(
@@ -171,8 +249,27 @@ def _clear_pidfile() -> None:
         pass
 
 
+def _port_in_use(port: int) -> bool:
+    """Fast check: does anything accept connections on the port? (milliseconds)"""
+    try:
+        with socket.create_connection((BACKEND_HOST, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
 def _port_owner_pid(port: int) -> int | None:
     """PID listening on the port, or None. Best-effort; never kills anything."""
+    if not _port_in_use(port):
+        return None  # the common case after a stop: no PowerShell spawn at all
+    ps = _psutil()
+    if ps is not None:
+        try:
+            for c in ps.net_connections(kind="tcp"):
+                if c.status == ps.CONN_LISTEN and c.laddr and c.laddr.port == port and c.pid:
+                    return int(c.pid)
+        except Exception:
+            pass
     try:
         if sys.platform == "win32":
             out = subprocess.run(
@@ -235,8 +332,9 @@ def release_backend() -> None:
     _clear_pidfile()
     # Give the OS a moment to release the port and the GPU memory.
     deadline = time.time() + 15
-    while time.time() < deadline and _port_owner_pid(BACKEND_PORT) in owned:
-        time.sleep(0.5)
+    while time.time() < deadline and _port_in_use(BACKEND_PORT) \
+            and _port_owner_pid(BACKEND_PORT) in owned:
+        time.sleep(0.1)
 
 
 def _assert_port_free() -> None:
@@ -270,13 +368,18 @@ def _wait_ready(seconds: float = READY_TIMEOUT_S) -> bool:
             return True
         if STATE.proc is not None and STATE.proc.poll() is not None:
             return False
-        time.sleep(1.0)
+        time.sleep(0.25)  # was 1 s: up to ~0.75 s saved on every load
     return False
 
 
 # --------------------------------------------------------------------------- #
 # Command lines (pure functions — unit tested)
 # --------------------------------------------------------------------------- #
+
+def _fit_target_mib() -> str:
+    v = os.environ.get("HIVI_FIT_TARGET_MIB", "").strip()
+    return v if v.isdigit() and int(v) >= 128 else "512"
+
 
 def _set_ctx(args: list[str], ctx: int) -> None:
     i = args.index("-c")
@@ -296,7 +399,9 @@ def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[st
         "-b", "512",
         "-ub", "256",
         "--fit", "on",
-        "--fit-target", "512",
+        # MiB of VRAM --fit leaves free. Lower it (e.g. 256) to put more of the
+        # model on the GPU; scripts/gpu_check.py says when VRAM sits unused.
+        "--fit-target", _fit_target_mib(),
         "-ctk", "q8_0",
         "-ctv", "q8_0",
         "--jinja",
@@ -464,13 +569,16 @@ def stop_runtime() -> None:
 
 def _start_single(model: ModelEntry) -> bool:
     """Old path: one backend process for one model (Colibrì, or llama without router)."""
-    release_backend()
-    _assert_port_free()
-    if model.engine == "colibri":
-        start_colibri(model)
-    else:
-        start_llama(model)
-    return _wait_ready()
+    with _phase("stop"):
+        release_backend()
+        _assert_port_free()
+    with _phase("start"):
+        if model.engine == "colibri":
+            start_colibri(model)
+        else:
+            start_llama(model)
+    with _phase("load"):
+        return _wait_ready()
 
 
 def _as_llama(model: ModelEntry, why: str) -> ModelEntry:
@@ -478,7 +586,30 @@ def _as_llama(model: ModelEntry, why: str) -> ModelEntry:
 
 
 def select_model(model: ModelEntry) -> RuntimeState:
-    """Blocking switch. Call from a worker thread while holding SWITCH_LOCK."""
+    """Blocking switch. Call from a worker thread while holding SWITCH_LOCK.
+
+    Records seconds per phase (wait / stop / start / router_start / unload /
+    load) in STATE.timings, the status detail, and data/logs/hivi_switch_times.jsonl.
+    """
+    global _CLOCK, _PENDING_WAIT
+    _CLOCK = {}
+    if _PENDING_WAIT:
+        _CLOCK["wait"] = _PENDING_WAIT
+    _PENDING_WAIT = 0.0
+    t0 = time.perf_counter()
+    try:
+        state = _select_model(model)
+    finally:
+        clock, _CLOCK = _CLOCK or {}, None
+        clock["total"] = clock.get("wait", 0.0) + time.perf_counter() - t0
+        STATE.timings = clock
+        _log_switch(model, clock, STATE.status)
+    if STATE.status == "ready":
+        STATE.detail = f"{STATE.detail} · loaded in {_timing_summary(clock)}"
+    return state
+
+
+def _select_model(model: ModelEntry) -> RuntimeState:
     if model.engine == "colibri" and model.id in _COLIBRI_FAILED:
         model = _as_llama(model, _COLIBRI_FAILED[model.id])
     STATE.status = "starting"
@@ -502,7 +633,8 @@ def select_model(model: ModelEntry) -> RuntimeState:
             # Colibrì can't run this file (unsupported quant/arch): llama.cpp can.
             print(f"HIVI: {model.name} failed on Colibrì ({why}); falling back to llama.cpp")
             _COLIBRI_FAILED[model.id] = why[:300]
-            release_backend()
+            with _phase("stop"):
+                release_backend()
             model = _as_llama(model, why[:300])
             STATE.engine = "llama"
             note = " (Colibrì failed, using llama.cpp)"
@@ -715,16 +847,18 @@ def _router_alive() -> bool:
 
 
 def _start_router(llama: Path) -> None:
-    release_backend()  # Colibrì or a single-model llama-server
-    _assert_port_free()
-    args = build_router_args(llama, _preset_path(),
-                             margin_ok="--models-memory-margin" in _llama_help(llama))
-    _launch_raw(args, cwd=llama.parent, log=_log_dir() / "hivi_llama_router.log",
-                engine="llama", tag="llama-router")
-    STATE.router = True
-    STATE.detail = "llama router starting"
-    if not _wait_ready():
-        raise RuntimeError(f"llama router did not start; see {STATE.log_path}")
+    with _phase("stop"):
+        release_backend()  # Colibrì or a single-model llama-server
+        _assert_port_free()
+    with _phase("router_start"):
+        args = build_router_args(llama, _preset_path(),
+                                 margin_ok="--models-memory-margin" in _llama_help(llama))
+        _launch_raw(args, cwd=llama.parent, log=_log_dir() / "hivi_llama_router.log",
+                    engine="llama", tag="llama-router")
+        STATE.router = True
+        STATE.detail = "llama router starting"
+        if not _wait_ready():
+            raise RuntimeError(f"llama router did not start; see {STATE.log_path}")
 
 
 def _total_ram_gb() -> float | None:
@@ -852,8 +986,10 @@ def _select_in_router(model: ModelEntry, llama: Path) -> None:
     STATE.engine = "llama"
     STATE.backend_model = None
     rows = _router_rows()
-    _make_ram_room(model, rows)
-    _router_load(model)
+    with _phase("unload"):
+        _make_ram_room(model, rows)
+    with _phase("load"):
+        _router_load(model)
     STATE.resident = [m for m in STATE.resident
                       if _row_status(_router_row(m))[0] in _LIVE]  # router may have evicted
 
@@ -890,4 +1026,5 @@ def status_dict() -> dict:
         "switching": SWITCH_LOCK.locked(),
         "router": STATE.router,
         "resident": list(STATE.resident),
+        "timings": dict(STATE.timings),
     }

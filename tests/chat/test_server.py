@@ -7,6 +7,7 @@ import time
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import Response
 
 import server
@@ -80,13 +81,69 @@ async def test_memory_request_waits_for_switch_then_targets_new_model(fake_switc
     assert seen["path"] == "v1/chat/completions"
 
 
-async def test_switch_waits_for_inflight_memory(fake_switch, monkeypatch):
+async def test_switch_does_not_wait_for_memory_and_memory_is_retried(fake_switch, monkeypatch):
+    """A click on Load must not sit behind Hindsight's memory extraction."""
+    order: list[str] = []
+    calls: list[dict] = []
+
+    async def proxy(request, path, body=None, extra_headers=None):
+        calls.append(json.loads(body))
+        gen = server.GATE.generation
+        order.append(f"memory-start-{len(calls)}")
+        await asyncio.sleep(0.6)
+        if server.GATE.generation != gen:  # the switch killed the backend under us
+            order.append("memory-cut")
+            raise HTTPException(502, "backend unreachable")
+        order.append("memory-end")
+        return Response(content=b"{}", media_type="application/json")
+
+    real_select = server.select_model
+
+    def tracking_select(model):
+        order.append("switch")
+        server._current_backend_model = lambda: "new-model"
+        return real_select(model)
+
+    monkeypatch.setattr(server, "_proxy_buffered", proxy)
+    monkeypatch.setattr(server, "_current_backend_model", lambda: "old-model")
+    monkeypatch.setattr(server, "select_model", tracking_select)
+    async with _client() as c:
+        mem = asyncio.create_task(c.post("/memory/v1/chat/completions",
+                                         json={"model": "x", "messages": []}))
+        await asyncio.sleep(0.1)
+        t = time.perf_counter()
+        sel = await c.post("/api/select", json={"id": "m1"})
+        switch_took = time.perf_counter() - t
+        mem_resp = await mem
+    assert sel.status_code == 200 and mem_resp.status_code == 200
+    assert order.index("switch") < order.index("memory-cut")  # did not wait
+    assert switch_took < 1.5  # fake load is 1.0 s; old behaviour added the 0.6 s memory call
+    assert [c["model"] for c in calls] == ["old-model", "new-model"]  # retried on new model
+    assert server.GATE.inflight == 0
+
+
+async def test_memory_error_without_a_switch_is_not_retried(monkeypatch):
+    calls = 0
+
+    async def broken(request, path, body=None, extra_headers=None):
+        nonlocal calls
+        calls += 1
+        raise HTTPException(502, "backend unreachable")
+
+    monkeypatch.setattr(server, "_proxy_buffered", broken)
+    monkeypatch.setattr(server, "_current_backend_model", lambda: None)
+    async with _client() as c:
+        r = await c.post("/memory/v1/chat/completions", json={"messages": []})
+    assert r.status_code == 502 and calls == 1
+
+
+async def test_switch_still_waits_for_a_chat_reply(fake_switch, monkeypatch):
     order: list[str] = []
 
-    async def slow_proxy(request, path, body=None, extra_headers=None):
-        order.append("memory-start")
+    async def proxy(request, path, body=None, extra_headers=None, *, base=None):
+        order.append("chat-start")
         await asyncio.sleep(0.6)
-        order.append("memory-end")
+        order.append("chat-end")
         return Response(content=b"{}", media_type="application/json")
 
     real_select = server.select_model
@@ -95,16 +152,18 @@ async def test_switch_waits_for_inflight_memory(fake_switch, monkeypatch):
         order.append("switch")
         return real_select(model)
 
-    monkeypatch.setattr(server, "_proxy_buffered", slow_proxy)
-    monkeypatch.setattr(server, "_current_backend_model", lambda: None)
+    monkeypatch.setattr(server, "_proxy_buffered", proxy)
+    monkeypatch.setattr(server, "_adapt_chat_body", lambda raw: (raw, {}))
+    monkeypatch.setattr(server.model_router, "resolve", lambda name: None)
     monkeypatch.setattr(server, "select_model", tracking_select)
     async with _client() as c:
-        mem = asyncio.create_task(c.post("/memory/v1/chat/completions", json={"messages": []}))
+        chat = asyncio.create_task(c.post("/v1/chat/completions",
+                                          json={"model": "ui-model", "messages": []}))
         await asyncio.sleep(0.1)
         sel = await c.post("/api/select", json={"id": "m1"})
-        await mem
+        await chat
     assert sel.status_code == 200
-    assert order.index("memory-end") < order.index("switch")
+    assert order.index("chat-end") < order.index("switch")
 
 
 async def test_download_status_is_not_hardcoded(monkeypatch, tmp_path):

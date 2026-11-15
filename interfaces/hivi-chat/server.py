@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aux_services
+import gpu_doctor
 import httpx
 import model_router
 import uvicorn
@@ -39,6 +40,7 @@ from runtime import (
     STATE,
     SWITCH_LOCK,
     backend_model_name,
+    note_switch_wait,
     select_model,
     status_dict,
     stop_runtime,
@@ -73,6 +75,8 @@ _MEMORY_DRAIN_S = float(os.environ.get("HIVI_MEMORY_DRAIN_S", "120"))
 # long a switch waits for other agents' in-flight generations to finish.
 _SWITCH_WAIT_S = float(os.environ.get("HIVI_SWITCH_WAIT_S", "900"))
 _SWITCH_DRAIN_S = float(os.environ.get("HIVI_SWITCH_DRAIN_S", "600"))
+# A memory call cut off by a switch is resent this many times.
+_MEMORY_RETRIES = int(os.environ.get("HIVI_MEMORY_RETRIES", "2"))
 
 
 class BackendGate:
@@ -80,51 +84,74 @@ class BackendGate:
 
     Hindsight shares the one local backend with chat. Without coordination a
     model switch kills the backend mid-extraction and the retain fails. With the
-    gate, a switch first waits for in-flight memory calls to finish, and memory
-    calls that arrive during the switch wait for the new model instead of
+    gate, requests that arrive during a switch wait for the new model instead of
     hitting a dead port.
+
+    Foreground requests (chat, agents) are waited for. Background requests
+    (Hindsight memory) are not: a switch cuts them off and the memory proxy
+    retries them on the new model, so a click on "Load" never sits behind a
+    minute of memory extraction. ``generation`` changes on every switch, which is
+    how a failed background request knows it was cut off rather than broken.
     """
 
     def __init__(self) -> None:
         self._open = asyncio.Event()
         self._open.set()
-        self._idle = asyncio.Event()
+        self._idle = asyncio.Event()  # no foreground requests in flight
         self._idle.set()
-        self._inflight = 0
+        self._fg = 0
+        self._bg = 0
+        self.generation = 0
 
     @property
     def inflight(self) -> int:
-        return self._inflight
+        return self._fg + self._bg
+
+    @property
+    def foreground(self) -> int:
+        return self._fg
+
+    @property
+    def background(self) -> int:
+        return self._bg
 
     @property
     def is_open(self) -> bool:
         return self._open.is_set()
 
     def close(self) -> None:
+        self.generation += 1
         self._open.clear()
 
     def open(self) -> None:
         self._open.set()
 
     async def wait_idle(self, timeout: float) -> bool:
+        """Wait for foreground requests only; background ones are retried later."""
         try:
             await asyncio.wait_for(self._idle.wait(), timeout)
             return True
         except asyncio.TimeoutError:
             return False
 
-    async def enter(self, timeout: float) -> bool:
+    async def enter(self, timeout: float, *, background: bool = False) -> bool:
         try:
             await asyncio.wait_for(self._open.wait(), timeout)
         except asyncio.TimeoutError:
             return False
-        self._inflight += 1
-        self._idle.clear()
+        if background:
+            self._bg += 1
+        else:
+            self._fg += 1
+            self._idle.clear()
         return True
 
-    def leave(self) -> None:
-        self._inflight = max(0, self._inflight - 1)
-        if self._inflight == 0:
+    def leave(self, *, background: bool = False) -> None:
+        if background:
+            self._bg = max(0, self._bg - 1)
+            return
+        self._fg = max(0, self._fg - 1)
+        if self._fg == 0:
             self._idle.set()
 
 
@@ -189,6 +216,12 @@ async def api_roles():
     return await asyncio.to_thread(model_router.describe)
 
 
+@app.get("/api/gpu")
+async def api_gpu():
+    """GPU health: CUDA build, power, throttling, who holds VRAM (see gpu_doctor.py)."""
+    return (await asyncio.to_thread(gpu_doctor.collect)).to_dict()
+
+
 @app.get("/api/aux")
 async def api_aux():
     return aux_services.status_all()
@@ -226,7 +259,8 @@ async def api_route(request: Request):
 @app.get("/api/status")
 async def api_status():
     out = await asyncio.to_thread(status_dict)
-    out["memory_inflight"] = GATE.inflight
+    out["memory_inflight"] = GATE.background
+    out["chat_inflight"] = GATE.foreground
     return out
 
 
@@ -279,10 +313,14 @@ async def api_select(request: Request):
         raise HTTPException(409, "a model switch is already in progress")
     GATE.close()
     try:
+        # Only chat replies are waited for; memory calls are retried after the switch.
+        t0 = time.perf_counter()
         drained = await GATE.wait_idle(_MEMORY_DRAIN_S)
+        waited = time.perf_counter() - t0
         if not drained:
-            print(f"HIVI: switching with {GATE.inflight} memory request(s) still running")
+            print(f"HIVI: switching with {GATE.foreground} chat request(s) still running")
         # Model loads take minutes; keep the event loop free for /api/status etc.
+        note_switch_wait(waited)
         state = await asyncio.to_thread(select_model, model)
     finally:
         GATE.open()
@@ -486,9 +524,12 @@ async def _enter_with_model(target: ModelEntry | None) -> None:
             if _is_loaded(target):
                 continue  # someone else loaded it while we waited
             GATE.close()
+            t0 = time.perf_counter()
             drained = await GATE.wait_idle(_SWITCH_DRAIN_S)
+            waited = time.perf_counter() - t0
             if not drained:
-                print(f"HIVI: switching with {GATE.inflight} request(s) still running")
+                print(f"HIVI: switching with {GATE.foreground} chat request(s) still running")
+            note_switch_wait(waited)
             state = await asyncio.to_thread(select_model, target)
             ok, detail = state.status == "ready", state.detail
         finally:
@@ -618,25 +659,40 @@ async def memory_proxy(path: str, request: Request):
     """OpenAI-compatible endpoint for Hindsight (point its LLM base URL here).
 
     No HAIE param injection, the model name is rewritten to whatever is loaded
-    now, and requests wait out model switches instead of failing.
+    now, and requests wait out model switches instead of failing. Memory calls
+    are background work: a switch does not wait for them. If one is cut off by a
+    switch it is sent again, unchanged, once the new model is up.
     """
-    if not await GATE.enter(_MEMORY_WAIT_S):
-        raise HTTPException(503, "backend switching; memory request timed out waiting")
-    try:
-        raw = await request.body()
-        if request.method == "POST" and raw:
+    original = await request.body()
+    for attempt in range(1 + _MEMORY_RETRIES):
+        if not await GATE.enter(_MEMORY_WAIT_S, background=True):
+            raise HTTPException(503, "backend switching; memory request timed out waiting")
+        generation = GATE.generation
+        try:
+            raw = original
+            if request.method == "POST" and raw:
+                try:
+                    body = json.loads(raw.decode("utf-8"))
+                    if isinstance(body, dict) and "model" in body:
+                        current = await asyncio.to_thread(_current_backend_model)
+                        if current:
+                            body["model"] = current
+                        raw = json.dumps(body).encode("utf-8")
+                except Exception:
+                    pass
             try:
-                body = json.loads(raw.decode("utf-8"))
-                if isinstance(body, dict) and "model" in body:
-                    current = await asyncio.to_thread(_current_backend_model)
-                    if current:
-                        body["model"] = current
-                    raw = json.dumps(body).encode("utf-8")
-            except Exception:
-                pass
-        return await _proxy_buffered(request, f"v1/{path}", raw)
-    finally:
-        GATE.leave()
+                resp = await _proxy_buffered(request, f"v1/{path}", raw)
+            except HTTPException:
+                if GATE.generation != generation and attempt < _MEMORY_RETRIES:
+                    continue  # cut off by a switch: retry on the new model
+                raise
+            if resp.status_code >= 500 and GATE.generation != generation \
+                    and attempt < _MEMORY_RETRIES:
+                continue
+            return resp
+        finally:
+            GATE.leave(background=True)
+    raise HTTPException(503, "memory request kept being cut off by model switches")
 
 
 @app.get("/health")
