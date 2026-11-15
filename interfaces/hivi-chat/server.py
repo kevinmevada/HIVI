@@ -40,6 +40,7 @@ from runtime import (
     STATE,
     SWITCH_LOCK,
     backend_model_name,
+    note_speed,
     note_switch_wait,
     select_model,
     status_dict,
@@ -77,6 +78,15 @@ _SWITCH_WAIT_S = float(os.environ.get("HIVI_SWITCH_WAIT_S", "900"))
 _SWITCH_DRAIN_S = float(os.environ.get("HIVI_SWITCH_DRAIN_S", "600"))
 # A memory call cut off by a switch is resent this many times.
 _MEMORY_RETRIES = int(os.environ.get("HIVI_MEMORY_RETRIES", "2"))
+
+_FAST_PROBE_TTL = 3.0
+_SLOW_PROBE_TTL = 60.0
+_FAST_PROBE_TIMEOUT = 15.0
+_SLOW_PROBE_TIMEOUT = 75.0
+_FAST_CACHE = {"at": 0.0, "value": None}
+_SLOW_CACHE = {"at": 0.0, "key": None, "value": None}
+_FAST_CACHE_LOCK = asyncio.Lock()
+_SLOW_CACHE_LOCK = asyncio.Lock()
 
 
 class BackendGate:
@@ -264,6 +274,167 @@ async def api_status():
     return out
 
 
+async def _cached_fast_probe() -> dict | None:
+    now = time.monotonic()
+    async with _FAST_CACHE_LOCK:
+        if now - _FAST_CACHE["at"] < _FAST_PROBE_TTL:
+            return _FAST_CACHE["value"]
+        try:
+            value = await asyncio.wait_for(
+                asyncio.to_thread(gpu_doctor.collect_fast),
+                timeout=_FAST_PROBE_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
+            value = None
+        _FAST_CACHE.update(at=time.monotonic(), value=value)
+        return value
+
+
+async def _cached_slow_probe() -> dict | None:
+    key = (STATE.model_id, STATE.engine)
+    now = time.monotonic()
+    async with _SLOW_CACHE_LOCK:
+        if (_SLOW_CACHE["key"] == key
+                and now - _SLOW_CACHE["at"] < _SLOW_PROBE_TTL):
+            return _SLOW_CACHE["value"]
+        try:
+            value = await asyncio.wait_for(
+                asyncio.to_thread(gpu_doctor.collect_slow),
+                timeout=_SLOW_PROBE_TIMEOUT,
+            )
+        except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
+            value = None
+        _SLOW_CACHE.update(at=time.monotonic(), key=key, value=value)
+        return value
+
+
+def _warning_text(finding: dict) -> tuple[str, str] | None:
+    text = str(finding.get("text", ""))
+    lower = text.lower()
+    if "nvidia-smi did not answer" in lower:
+        return None
+    if "not found at" in lower:
+        return None
+    if "not a cuda build" in lower or "no gpu at all" in lower:
+        return "red", "This llama.cpp build is CPU-only"
+    if "on battery" in lower:
+        return "amber", "On battery"
+    if "power limit is" in lower:
+        return "amber", "GPU is power-limited"
+    if "held back right now" in lower:
+        return "amber", "GPU is being throttled"
+    if "gpu at" in lower:
+        return "red", "GPU is too hot"
+    if "windows power mode" in lower:
+        return "amber", "Windows power mode may limit performance"
+    if "other programs are on" in lower:
+        return "amber", "Other programs are using GPU memory"
+    if "vram is unused" in lower:
+        return "amber", text.split(". ", 1)[0]
+    if finding.get("level") in ("bad", "warn"):
+        return ("red" if finding["level"] == "bad" else "amber"), text
+    return None
+
+
+def _health_warnings(fast: dict, slow: dict, model: dict, speed: dict | None) -> list[dict]:
+    gpu = fast.get("gpu")
+    devices = slow.get("devices") or []
+    report = gpu_doctor.Report(
+        llama_server=slow.get("llama_server", ""),
+        devices=devices,
+        gpu=gpu,
+        processes=fast.get("processes") or [],
+        battery=slow.get("battery"),
+        power_plan=slow.get("power_plan"),
+    )
+    findings = gpu_doctor.diagnose(
+        report,
+        llama_found=bool(slow.get("llama_found")),
+        devices_ran=bool(slow.get("devices_ran")),
+    )
+    warnings: list[dict] = []
+    for finding in findings:
+        item = _warning_text(finding)
+        if item:
+            level, text = item
+            if not any(w["text"] == text for w in warnings):
+                warnings.append({"level": level, "text": text})
+
+    if gpu:
+        total = gpu.get("vram_total_mib") or 0
+        used = gpu.get("vram_used_mib") or 0
+        if total and used / total >= 0.95:
+            warnings.append({"level": "red", "text": "VRAM is at least 95% full"})
+        elif total and used / total >= 0.85:
+            warnings.append({"level": "amber", "text": "VRAM is at least 85% full"})
+        temp = gpu.get("temp_c") or 0
+        if temp >= 87 and not any(w["text"] == "GPU is too hot" for w in warnings):
+            warnings.append({"level": "red", "text": "GPU is too hot"})
+        elif temp >= 80 and not any(w["text"] == "GPU is too hot" for w in warnings):
+            warnings.append({"level": "amber", "text": "GPU temperature is high"})
+
+    if model.get("status") == "unhealthy":
+        warnings.append({"level": "red", "text": "Backend is unhealthy"})
+    priority = {"red": 0, "amber": 1}
+    return sorted(warnings, key=lambda w: priority[w["level"]])
+
+
+def _health_model(status: dict) -> dict:
+    raw_status = status.get("status")
+    if raw_status == "ready" and status.get("healthy"):
+        model_status = "ready"
+    elif raw_status in ("starting", "loading"):
+        model_status = "loading"
+    elif status.get("model_id") or raw_status in ("error", "unhealthy"):
+        model_status = "unhealthy"
+    else:
+        model_status = "idle"
+    return {
+        "name": status.get("name"),
+        "engine": status.get("engine"),
+        "router": bool(status.get("router")),
+        "context_size": status.get("context_size"),
+        "status": model_status,
+        "timings": status.get("timings") or {},
+    }
+
+
+@app.get("/api/health")
+async def api_health():
+    fast, slow, status = await asyncio.gather(
+        _cached_fast_probe(),
+        _cached_slow_probe(),
+        asyncio.to_thread(status_dict),
+    )
+    fast = fast or {}
+    slow = slow or {}
+    model = _health_model(status)
+    speed = status.get("speed")
+    gpu = fast.get("gpu")
+    if gpu is not None:
+        gpu = dict(gpu)
+        total = gpu.get("vram_total_mib")
+        used = gpu.get("vram_used_mib")
+        gpu["vram_free_mib"] = (
+            max(0.0, total - used) if total is not None and used is not None else None
+        )
+        gpu["throttle_reasons"] = gpu_doctor.throttle_reasons(gpu.get("throttle_mask"))
+        gpu["processes"] = fast.get("processes") or []
+    warnings = _health_warnings(fast, slow, model, speed)
+    level = "red" if any(w["level"] == "red" for w in warnings) else (
+        "amber" if warnings else "ok"
+    )
+    return {
+        "gpu": gpu,
+        "system": fast.get("system") or {},
+        "model": model,
+        "speed": speed,
+        "warnings": warnings,
+        "level": level,
+        "sampled_at": time.time(),
+    }
+
+
 @app.get("/api/download/status")
 def api_download_status():
     """In-progress Hugging Face downloads anywhere under the models root."""
@@ -401,12 +572,119 @@ async def _proxy_buffered(
     return Response(content=upstream.content, status_code=upstream.status_code, headers=out_headers)
 
 
+class _SpeedTracker:
+    def __init__(self, started: float, model: str | None, engine: str | None) -> None:
+        self.started = started
+        self.model = model
+        self.engine = engine
+        self.buffer = ""
+        self.first_content: float | None = None
+        self.last_content: float | None = None
+        self.content_chunks = 0
+        self.server_tps: float | None = None
+        self.server_tokens: int | None = None
+
+    def _event(self, data: str) -> None:
+        if not data or data == "[DONE]":
+            return
+        try:
+            obj = json.loads(data)
+        except (TypeError, ValueError):
+            return
+        usage = obj.get("usage") or {}
+        if usage.get("completion_tokens") is not None:
+            try:
+                self.server_tokens = int(usage["completion_tokens"])
+            except (TypeError, ValueError):
+                pass
+        timings = obj.get("timings") or {}
+        if timings.get("predicted_per_second") is not None:
+            try:
+                self.server_tps = float(timings["predicted_per_second"])
+            except (TypeError, ValueError):
+                pass
+        if timings.get("predicted_n") is not None:
+            try:
+                self.server_tokens = int(timings["predicted_n"])
+            except (TypeError, ValueError):
+                pass
+        delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+        piece = delta.get("content")
+        if isinstance(piece, str) and piece:
+            now = time.perf_counter()
+            if self.first_content is None:
+                self.first_content = now
+            self.last_content = now
+            self.content_chunks += 1
+
+    def feed(self, chunk: bytes) -> None:
+        self.buffer += chunk.decode("utf-8", errors="replace")
+        lines = self.buffer.splitlines()
+        self.buffer = "" if self.buffer.endswith(("\n", "\r")) else lines.pop() if lines else self.buffer
+        for line in lines:
+            if line.startswith("data:"):
+                self._event(line[5:].strip())
+
+    def finish(self) -> None:
+        if self.buffer.startswith("data:"):
+            self._event(self.buffer[5:].strip())
+        finished = time.time()
+        end = self.last_content or time.perf_counter()
+        first = self.first_content or end
+        tokens = self.server_tokens if self.server_tokens is not None else self.content_chunks
+        tps = self.server_tps
+        approx = tps is None
+        if tps is None:
+            tps = tokens / max(end - first, 0.001) if tokens else None
+        note_speed({
+            "model": self.model,
+            "engine": self.engine,
+            "ttft_s": None if self.first_content is None else round(
+                self.first_content - self.started, 4
+            ),
+            "tok_s": None if tps is None else round(tps, 3),
+            "tokens": tokens,
+            "approx": approx,
+            "finished_at": finished,
+        })
+
+
+def _record_buffered_speed(response: Response, started: float,
+                           model: str | None, engine: str | None) -> None:
+    try:
+        body = json.loads(response.body)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return
+    usage = body.get("usage") or {}
+    timings = body.get("timings") or {}
+    try:
+        tokens = int(timings.get("predicted_n", usage.get("completion_tokens", 0)))
+    except (TypeError, ValueError):
+        tokens = 0
+    try:
+        tps = float(timings["predicted_per_second"])
+    except (KeyError, TypeError, ValueError):
+        tps = None
+    note_speed({
+        "model": model,
+        "engine": engine,
+        "ttft_s": round(time.perf_counter() - started, 4),
+        "tok_s": None if tps is None else round(tps, 3),
+        "tokens": tokens,
+        "approx": tps is None,
+        "finished_at": time.time(),
+    })
+
+
 async def _proxy_stream(
     request: Request,
     path: str,
     body: bytes,
     extra_headers: dict[str, str] | None = None,
     on_close: Callable[[], None] | None = None,
+    speed_started: float | None = None,
+    speed_model: str | None = None,
+    speed_engine: str | None = None,
 ) -> StreamingResponse:
     """Pass through SSE / chunked bodies without buffering the full reply.
 
@@ -434,14 +712,25 @@ async def _proxy_stream(
 
     media = upstream.headers.get("content-type", "text/event-stream")
 
+    tracker = (
+        _SpeedTracker(speed_started, speed_model, speed_engine)
+        if speed_started is not None else None
+    )
+
     async def byte_iter():
         try:
             async for chunk in upstream.aiter_raw():
                 if chunk:
+                    # Yield first: parsing metrics must never delay bytes reaching
+                    # the client.
                     yield chunk
+                    if tracker:
+                        tracker.feed(chunk)
         finally:
             await upstream.aclose()
             await client.aclose()
+            if tracker:
+                tracker.finish()
             if on_close:
                 on_close()
 
@@ -571,6 +860,7 @@ async def openai_proxy(path: str, request: Request):
             return await _active_models_only(request)
         return await _proxy_buffered(request, f"v1/{path}")
 
+    speed_started = time.perf_counter()
     raw = await request.body()
     resolved = await asyncio.to_thread(model_router.resolve, _requested_model(raw))
     await _enter_with_model(resolved.model if resolved else None)
@@ -611,11 +901,21 @@ async def openai_proxy(path: str, request: Request):
         if wants_stream:
             # The stream releases the gate when the last chunk is sent.
             response = await _proxy_stream(
-                request, f"v1/{path}", adapted, extra, on_close=release
+                request, f"v1/{path}", adapted, extra, on_close=release,
+                speed_started=speed_started,
+                speed_model=STATE.name or STATE.model_id or _requested_model(raw),
+                speed_engine=STATE.engine,
             )
             handed_off = True
             return response
-        return await _proxy_buffered(request, f"v1/{path}", adapted, extra)
+        response = await _proxy_buffered(request, f"v1/{path}", adapted, extra)
+        _record_buffered_speed(
+            response,
+            speed_started,
+            STATE.name or STATE.model_id or _requested_model(raw),
+            STATE.engine,
+        )
+        return response
     finally:
         if not handed_off:
             release()  # idempotent: safe if the stream already released on failure

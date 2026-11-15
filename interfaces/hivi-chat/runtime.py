@@ -74,6 +74,8 @@ class RuntimeState:
     backend_model: str | None = None  # name to send as "model" (router section id)
     resident: list[str] = field(default_factory=list)  # router models, least recent first
     timings: dict[str, float] = field(default_factory=dict)  # last switch, seconds per phase
+    context_size: int | None = None
+    last_speed: dict | None = None
 
 
 STATE = RuntimeState()
@@ -90,6 +92,10 @@ def note_switch_wait(seconds: float) -> None:
     """The server reports how long the switch waited for chat replies to finish."""
     global _PENDING_WAIT
     _PENDING_WAIT = max(0.0, float(seconds))
+
+
+def note_speed(result: dict) -> None:
+    STATE.last_speed = dict(result)
 
 
 @contextmanager
@@ -329,6 +335,7 @@ def release_backend() -> None:
     STATE.router = False
     STATE.backend_model = None
     STATE.resident = []
+    STATE.context_size = None
     _clear_pidfile()
     # Give the OS a moment to release the port and the GPU memory.
     deadline = time.time() + 15
@@ -617,6 +624,15 @@ def _select_model(model: ModelEntry) -> RuntimeState:
     STATE.name = model.name
     STATE.engine = model.engine
     STATE.vision = bool(model.vision_projector_path)
+    if model.engine == "colibri":
+        STATE.context_size = 8192
+    elif model.uncensored:
+        STATE.context_size = 16384
+    elif any(marker in f"{model.id} {model.name}".lower()
+             for marker in ("deepseek-coder-v2", "qwen3-coder-30b", "30b-a3b")):
+        STATE.context_size = 4096
+    else:
+        STATE.context_size = 8192
     STATE.detail = f"switching to {model.engine}"
     note = ""
     try:
@@ -1027,4 +1043,6 @@ def status_dict() -> dict:
         "router": STATE.router,
         "resident": list(STATE.resident),
         "timings": dict(STATE.timings),
+        "context_size": STATE.context_size,
+        "speed": None if STATE.last_speed is None else dict(STATE.last_speed),
     }

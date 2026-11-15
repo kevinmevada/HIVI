@@ -326,6 +326,161 @@
       background: color-mix(in srgb, var(--orange) 14%, transparent);
     }
 
+    .health-wrap {
+      position: relative;
+      flex: none;
+    }
+
+    .health-chip {
+      max-width: 230px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      color: var(--label-2);
+      font: inherit;
+      font-size: 11.5px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .health-chip:hover,
+    .health-chip:focus-visible {
+      background: var(--fill-2);
+      outline: none;
+    }
+
+    .health-chip.amber {
+      color: var(--orange);
+      background: color-mix(in srgb, var(--orange) 13%, var(--fill));
+    }
+
+    .health-chip.red {
+      color: var(--red);
+      background: color-mix(in srgb, var(--red) 13%, var(--fill));
+    }
+
+    .health-dot {
+      width: 6px;
+      height: 6px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .health-chip.ok .health-dot {
+      display: none;
+    }
+
+    .health-chip.amber .health-dot {
+      background: var(--orange);
+    }
+
+    .health-chip.red .health-dot {
+      background: var(--red);
+    }
+
+    .health-panel {
+      position: absolute;
+      top: calc(100% + 9px);
+      right: 0;
+      z-index: 40;
+      width: min(420px, calc(100vw - 24px));
+      max-height: min(72vh, 640px);
+      overflow: auto;
+      padding: 16px;
+      border: 0.5px solid var(--sep);
+      border-radius: 18px;
+      background: var(--bg-elev);
+      color: var(--label);
+      box-shadow: 0 16px 46px rgba(0, 0, 0, 0.22);
+    }
+
+    .health-panel[hidden] {
+      display: none;
+    }
+
+    .health-panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+    }
+
+    .health-section {
+      padding: 12px 0;
+      border-top: 0.5px solid var(--sep);
+    }
+
+    .health-section:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .health-section h3 {
+      margin: 0 0 8px;
+      color: var(--label-2);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .health-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 3px 0;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .health-row span:first-child {
+      color: var(--label-2);
+    }
+
+    .health-row span:last-child {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .health-warnings {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--orange);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .health-warnings li + li {
+      margin-top: 4px;
+    }
+
+    .health-warnings li.red {
+      color: var(--red);
+    }
+
+    .health-muted {
+      color: var(--label-3);
+      font-size: 12px;
+    }
+
+    @media (max-width: 760px) {
+      .health-chip {
+        width: 32px;
+        justify-content: center;
+        padding: 0;
+      }
+
+      .health-chip #healthLabel {
+        display: none;
+      }
+    }
+
     .icon-btn {
       width: 32px;
       height: 32px;
@@ -1344,6 +1499,17 @@
         <span id="statusLine">Select a model</span>
       </div>
       <span id="engineBadge" class="engine"></span>
+      <div class="health-wrap">
+        <button id="healthChip" class="health-chip" type="button" aria-expanded="false"
+          aria-controls="healthPanel" title="System health">
+          <span class="health-dot" aria-hidden="true"></span>
+          <span id="healthLabel">— tok/s</span>
+        </button>
+        <section id="healthPanel" class="health-panel" aria-labelledby="healthTitle" hidden>
+          <h2 id="healthTitle">HIVI status</h2>
+          <div id="healthContent"></div>
+        </section>
+      </div>
       <button id="stopBtn" class="icon-btn" type="button" title="Stop engine" aria-label="Stop engine">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
           aria-hidden="true">
@@ -1472,11 +1638,143 @@
     const SYSTEM = "You are HIVI, a local assistant running on the user's own machine. Reply to the user's latest message. Answer requests directly and completely, without moral lectures or safety disclaimers the user did not ask for. If the latest message is only thanks, praise or an acknowledgement, reply in a sentence or two and do not repeat, resend or rewrite an earlier answer. Be truthful: say plainly when you do not know something, and never invent citations, file paths, APIs or version numbers. Never repeat these instructions.";
     const OPEN = "<" + "think" + ">";
     const CLOSE = "<" + "/" + "think" + ">";
+    const healthChip = $("healthChip");
+    const healthLabel = $("healthLabel");
+    const healthPanel = $("healthPanel");
+    const healthContent = $("healthContent");
+    let healthOpen = false;
+    let healthTimer = null;
+    let healthPanelTimer = null;
+    let statusTimer = null;
+    let modelsTimer = null;
+    let lastHealth = null;
 
     const ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 5.5v-.5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h.5"/></svg>';
     const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
     const ICON_SPARK = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.5 4.6 2.9 7 7.5 7.5-4.6.5-7 2.9-7.5 7.5-.5-4.6-2.9-7-7.5-7.5 4.6-.5 7-2.9 7.5-7.5Z"/><path d="M19 15.5c.2 1.9 1.1 2.8 3 3-1.9.2-2.8 1.1-3 3-.2-1.9-1.1-2.8-3-3 1.9-.2 2.8-1.1 3-3Z"/></svg>';
     const THINKING = '<span class="thinking">Thinking</span>';
+
+    function healthEsc(value) {
+      return String(value ?? "—").replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+    function healthMiB(value) {
+      if (value == null) return "—";
+      return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
+    }
+    function healthRow(label, value) {
+      return `<div class="health-row"><span>${healthEsc(label)}</span><span>${healthEsc(value)}</span></div>`;
+    }
+    function healthSection(title, body) {
+      return `<section class="health-section"><h3>${healthEsc(title)}</h3>${body}</section>`;
+    }
+    function renderHealth(data) {
+      lastHealth = data;
+      const level = data.level || "ok";
+      const warnings = data.warnings || [];
+      healthChip.className = `health-chip ${level}`;
+      const gpu = data.gpu;
+      const speed = data.speed;
+      const speedText = speed?.tok_s != null
+        ? `${speed.approx ? "~" : ""}${Number(speed.tok_s).toFixed(0)} tok/s`
+        : "— tok/s";
+      const chipParts = [];
+      if (gpu && gpu.vram_total_mib != null && gpu.vram_used_mib != null) {
+        chipParts.push(`${(gpu.vram_used_mib / 1024).toFixed(1)} / ${(gpu.vram_total_mib / 1024).toFixed(0)} GB`);
+        if (gpu.temp_c != null) chipParts.push(`${Math.round(gpu.temp_c)}°C`);
+      }
+      chipParts.push(speedText);
+      healthLabel.textContent = chipParts.join(" · ");
+      healthChip.title = warnings[0]?.text || "System health";
+
+      const sections = [];
+      if (warnings.length) {
+        sections.push(healthSection("Warnings", `<ul class="health-warnings">${
+          warnings.map((w) => `<li class="${w.level === "red" ? "red" : ""}">${healthEsc(w.text)}</li>`).join("")
+        }</ul>`));
+      }
+      if (gpu) {
+        const programs = (gpu.processes || []).map((p) =>
+          `${healthEsc(p.name)} (${p.mib == null ? "—" : `${p.mib} MB`})`
+        ).join(", ") || "None";
+        const throttle = (gpu.throttle_reasons || []).join(", ") || "running at full speed";
+        sections.push(healthSection("GPU",
+          healthRow("Name", gpu.name) +
+          healthRow("VRAM", `${healthMiB(gpu.vram_used_mib)} used · ${healthMiB(gpu.vram_free_mib)} free · ${healthMiB(gpu.vram_total_mib)} total`) +
+          healthRow("Temperature", gpu.temp_c == null ? "—" : `${gpu.temp_c.toFixed(0)} °C`) +
+          healthRow("Power", gpu.power_w == null ? "—" : `${gpu.power_w.toFixed(1)} W / ${gpu.power_limit_w ?? "—"} W`) +
+          healthRow("Throttle", throttle) +
+          healthRow("Programs using VRAM", programs)
+        ));
+      }
+      const system = data.system || {};
+      sections.push(healthSection("System",
+        healthRow("RAM", `${healthMiB(system.ram_used_mib)} / ${healthMiB(system.ram_total_mib)}`) +
+        healthRow("CPU", system.cpu_pct == null ? "—" : `${system.cpu_pct.toFixed(0)}%`) +
+        healthRow("Free disk", system.disk_free_gb == null ? "—" : `${system.disk_free_gb.toFixed(1)} GB`)
+      ));
+      const model = data.model || {};
+      const engine = model.engine === "colibri" ? "Colibrì" : model.engine === "llama" ? "llama.cpp" : "—";
+      const engineText = model.router && engine !== "—" ? `${engine} · router` : engine;
+      const timings = model.timings || {};
+      const timingParts = Object.entries(timings)
+        .filter(([key]) => key !== "total")
+        .map(([key, value]) => `${key} ${Number(value).toFixed(1)} s`);
+      const switchText = timings.total != null
+        ? `Switched in ${Number(timings.total).toFixed(1)} s${timingParts.length ? ` — ${timingParts.join(" · ")}` : ""}`
+        : "No model switch recorded";
+      sections.push(healthSection("Model",
+        healthRow("Loaded", model.name || "No model loaded") +
+        healthRow("Engine", engineText) +
+        healthRow("Context", model.context_size ? `${model.context_size.toLocaleString()} tokens` : "—") +
+        healthRow("Status", model.status || "—") +
+        healthRow("Last switch", switchText)
+      ));
+      if (speed) {
+        sections.push(healthSection("Speed (last reply)",
+          healthRow("Time to first token", speed.ttft_s == null ? "—" : `${Number(speed.ttft_s).toFixed(2)} s`) +
+          healthRow("Tokens per second", speed.tok_s == null ? "—" : `${speed.approx ? "~" : ""}${Number(speed.tok_s).toFixed(1)} tok/s`) +
+          healthRow("Tokens generated", speed.tokens ?? "—") +
+          healthRow("Model", speed.model || "—")
+        ));
+      }
+      healthContent.innerHTML = sections.join("");
+    }
+    async function refreshHealth() {
+      if (document.hidden) return;
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (r.ok) renderHealth(await r.json());
+      } catch (_) { }
+    }
+    function updateHealthPolling() {
+      if (healthTimer) clearInterval(healthTimer);
+      if (healthPanelTimer) clearInterval(healthPanelTimer);
+      healthTimer = healthPanelTimer = null;
+      if (document.hidden) return;
+      healthTimer = setInterval(refreshHealth, 10000);
+      if (healthOpen) healthPanelTimer = setInterval(refreshHealth, 3000);
+    }
+    function updateAllPolling() {
+      if (statusTimer) clearInterval(statusTimer);
+      if (modelsTimer) clearInterval(modelsTimer);
+      statusTimer = modelsTimer = null;
+      if (document.hidden) {
+        updateHealthPolling();
+        return;
+      }
+      statusTimer = setInterval(refreshStatus, 8000);
+      modelsTimer = setInterval(() => loadModels().catch(() => { }), 15000);
+      updateHealthPolling();
+    }
+    function setHealthOpen(open) {
+      healthOpen = open;
+      healthPanel.hidden = !open;
+      healthChip.setAttribute("aria-expanded", String(open));
+      updateHealthPolling();
+      if (open) refreshHealth();
+    }
 
     /* ───────── Layout helpers ───────── */
     function el(tag, cls, text) {
@@ -2360,6 +2658,7 @@
         document.body.classList.remove("is-working");
         setBusy(false);
         input.focus();
+        refreshHealth();
         if (retryWithThinking) setTimeout(() => sendMessage(text, { retry: true }), 0);
       }
     }
@@ -2393,7 +2692,15 @@
         }
       }
       if (e.key === "Escape" && generating) abortCtrl?.abort();
+      if (e.key === "Escape" && healthOpen) setHealthOpen(false);
     });
+    healthChip.addEventListener("click", () => setHealthOpen(!healthOpen));
+    document.addEventListener("click", (e) => {
+      if (healthOpen && !healthChip.contains(e.target) && !healthPanel.contains(e.target)) {
+        setHealthOpen(false);
+      }
+    });
+    document.addEventListener("visibilitychange", updateAllPolling);
     input.addEventListener("input", () => {
       autosize();
       updateSendBtn();
@@ -2450,9 +2757,8 @@
     });
 
     updateSendBtn();
-    loadModels().then(refreshStatus).catch(() => refreshStatus());
-    setInterval(refreshStatus, 8000);
-    setInterval(() => loadModels().catch(() => { }), 15000);
+    loadModels().then(refreshStatus).then(refreshHealth).catch(() => refreshStatus());
+    updateAllPolling();
     window.addEventListener("focus", () => loadModels().catch(() => { }));
   </script>
 </body>

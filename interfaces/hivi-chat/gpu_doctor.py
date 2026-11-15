@@ -177,6 +177,23 @@ def _power_plan() -> str | None:
     return m[1] if m else None
 
 
+def _system_snapshot() -> dict:
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        cpu_pct = psutil.cpu_percent(interval=None)
+        disk = psutil.disk_usage(str(paths.models_root()))
+        return {
+            "ram_used_mib": round(memory.used / 1024 / 1024, 1),
+            "ram_total_mib": round(memory.total / 1024 / 1024, 1),
+            "cpu_pct": round(cpu_pct, 1),
+            "disk_free_gb": round(disk.free / 1024**3, 2),
+        }
+    except Exception:  # noqa: BLE001 - optional system probes degrade to unavailable
+        return {}
+
+
 @dataclass
 class Report:
     llama_server: str = ""
@@ -191,19 +208,47 @@ class Report:
         return asdict(self)
 
 
-def collect() -> Report:
-    rep = Report()
+def collect_fast() -> dict:
+    """Collect short-lived probes used by the status chip and panel."""
+    return {
+        "gpu": parse_gpu_query(_run([
+            "nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}",
+            "--format=csv,noheader,nounits",
+        ], timeout=10) or ""),
+        "processes": parse_gpu_processes(_run(["nvidia-smi"], timeout=10) or ""),
+        "system": _system_snapshot(),
+    }
+
+
+def collect_slow() -> dict:
+    """Collect probes that can spawn engines or touch Windows power APIs."""
     llama = paths.llama_server()
-    rep.llama_server = str(llama)
     devices_out = _run([str(llama), "--list-devices"], timeout=60) if llama.exists() else None
-    rep.devices = parse_list_devices(devices_out or "")
-    rep.gpu = parse_gpu_query(_run([
-        "nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}", "--format=csv,noheader,nounits",
-    ]) or "")
-    rep.processes = parse_gpu_processes(_run(["nvidia-smi"]) or "")
-    rep.battery = _battery()
-    rep.power_plan = _power_plan()
-    rep.findings = diagnose(rep, llama_found=llama.exists(), devices_ran=devices_out is not None)
+    return {
+        "llama_server": str(llama),
+        "llama_found": llama.exists(),
+        "devices_ran": devices_out is not None,
+        "devices": parse_list_devices(devices_out or ""),
+        "battery": _battery(),
+        "power_plan": _power_plan(),
+    }
+
+
+def collect() -> Report:
+    fast = collect_fast()
+    slow = collect_slow()
+    rep = Report()
+    rep.gpu = fast["gpu"]
+    rep.processes = fast["processes"]
+    rep.llama_server = slow["llama_server"]
+    rep.devices = slow["devices"]
+    rep.battery = slow["battery"]
+    rep.power_plan = slow["power_plan"]
+    rep.findings = diagnose(
+        rep,
+        llama_found=slow["llama_found"],
+        devices_ran=slow["devices_ran"],
+    )
     return rep
 
 
@@ -231,7 +276,7 @@ def diagnose(rep: Report, *, llama_found: bool = True, devices_ran: bool = True)
             d = cuda[0]
             add("ok", f"llama.cpp uses CUDA on {d['name']} ({d['total_mib']} MiB).")
         elif rep.devices:
-            names = ", ".join(f"{d['id']} {d['name']}" for d in rep.devices)
+            names = ", ".join(f"{d.get('id', '?')} {d.get('name', 'unknown')}" for d in rep.devices)
             add("bad", "llama-server is not a CUDA build; it sees only "
                        f"{names}. Rebuild with -DGGML_CUDA=ON or download the CUDA "
                        "Windows release. This alone can cost 2-5x speed.")
@@ -257,7 +302,7 @@ def diagnose(rep: Report, *, llama_found: bool = True, devices_ran: bool = True)
         add("warn", "GPU is being held back right now: " + ", ".join(reasons) + ".")
     if (gpu.get("temp_c") or 0) >= 87:
         add("warn", f"GPU at {gpu['temp_c']:.0f} °C: raise the laptop for airflow / use a cooling pad.")
-    if rep.power_plan and not re.search(r"high|ultimate|best perf", rep.power_plan, re.I):
+    if rep.power_plan and not re.search(r"high|ultimate|best perf", rep.power_plan, re.IGNORECASE):
         add("warn", f"Windows power mode is '{rep.power_plan}'. Set Settings -> System -> "
                     "Power & battery -> Power mode to 'Best performance' (while plugged in).")
 
