@@ -12,19 +12,7 @@
     "**/__pycache__": true,
     "**/.pytest_cache": true
   },
-  "terminal.integrated.defaultProfile.windows": "HIVI",
   "terminal.integrated.profiles.windows": {
-    "HIVI": {
-      "source": "PowerShell",
-      "icon": "terminal-powershell",
-      "args": [
-        "-NoExit",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        "${workspaceFolder}/scripts/start.ps1"
-      ]
-    },
     "PowerShell": {
       "source": "PowerShell",
       "icon": "terminal-powershell"

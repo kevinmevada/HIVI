@@ -1,1 +1,0 @@
-Implement a thread-safe bounded producer-consumer queue in C++20 using std::mutex, std::condition_variable, and std::unique_lock. Include correct synchronization, shutdown behavior, exception-safety discussion, and a short usage example.

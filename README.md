@@ -12,8 +12,7 @@ Local AI workbench for an 8 GB-VRAM laptop: a portable model library, a chat
 UI that runs GGUF models on Colibrì or llama.cpp, and a project memory layer
 (Hindsight + SQLite ledger + LangGraph) that survives restarts.
 
-Honest status lives in `docs/ARCHITECTURE_COMPLETENESS_AUDIT.md` and the
-milestone plan in `docs/CORE_INTEGRATION_SPINE.md`.
+Current status and planned work live in [`docs/FUTURE_FEATURES.md`](docs/FUTURE_FEATURES.md).
 
 ## Brand
 

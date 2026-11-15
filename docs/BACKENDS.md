@@ -39,7 +39,7 @@ If the Colibrì tag name differs upstream, pass the commit you tested:
 
 - **Colibrì**: Qwen3 / 3.5 / 3.6 / 3.8 text models, uncensored builds included.
   Its GPU/RAM tiering is built for models larger than VRAM (27B on the 8 GB
-  RTX 5060: ~38 s vs ~125 s for llama.cpp, `benchmarks/27b_comparison`).
+  RTX 5060); model-switch timings are recorded by the chat runtime.
 - **llama.cpp**: GPT-OSS, Gemma, Qwen2.5, Qwen3-Coder-30B, anything with a
   vision projector (`mmproj-*.gguf` in its folder), embeddings and rerankers.
 - If Colibrì cannot import or start a file, HIVI falls back to llama.cpp for
