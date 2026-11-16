@@ -13,6 +13,9 @@ UI that runs GGUF models on Colibrì or llama.cpp, and a project memory layer
 (Hindsight + SQLite ledger + LangGraph) that survives restarts.
 
 Current status and planned work live in [`docs/FUTURE_FEATURES.md`](docs/FUTURE_FEATURES.md).
+The project's design vision is also available as the
+[`HIVI Vision IEEE paper`](HIVI_Vision_Paper_IEEE.pdf), with editable LaTeX
+sources in [`hivi-ieee-source/`](hivi-ieee-source/).
 
 ## Brand
 
@@ -155,3 +158,12 @@ pytest tests/desktop/test_hivi_app.py  # desktop launcher tests only
 
 `HIVI USB Model Library Final Design.docx` describes the USB shelf and SHA-256
 workflow: models are stored on USB, verified, and run from the NVMe.
+
+## IEEE paper
+
+The checked-in paper package contains the rendered
+[`HIVI_Vision_Paper_IEEE.pdf`](HIVI_Vision_Paper_IEEE.pdf) and the complete
+IEEEtran source in [`hivi-ieee-source/`](hivi-ieee-source/). The source includes
+the main `hivi.tex`, all section files, `refs.bib`, and the local IEEEtran class
+and bibliography style files so the document can be rebuilt without relying on
+untracked project files.
