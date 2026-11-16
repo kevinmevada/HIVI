@@ -67,3 +67,7 @@ src/hivi/inference/airllm-main/air_llm/tests/test_notebooks/
 src/hivi/inference/llama.cpp-master/
 src/hivi/inference/colibri-LLM-main/
 src/hivi/inference/airllm-main/
+
+# Personal memory, feedback and local backups never leave this PC
+data/memory/
+data/backups/

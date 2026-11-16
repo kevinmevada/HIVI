@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 
 from hivi_paths import paths
@@ -124,9 +126,16 @@ def parse_gpu_processes(text: str) -> list[dict]:
 # Probing (talks to the machine)
 # --------------------------------------------------------------------------- #
 
+# Windows: no console window flashing up for each probe when HIVI runs windowless.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _run(args: list[str], timeout: float = 20.0) -> str | None:
     try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(
+            args, capture_output=True, text=True, timeout=timeout, check=False,
+            creationflags=_NO_WINDOW,
+        )
         return (r.stdout or "") + (r.stderr or "")
     except Exception:
         return None
@@ -208,14 +217,52 @@ class Report:
         return asdict(self)
 
 
+# Which programs hold VRAM changes rarely and the full nvidia-smi table is the
+# slowest call, so it refreshes every few seconds, not on every live reading.
+_PROCESSES_TTL = 8.0
+_PROCESSES_CACHE: dict = {"at": 0.0, "value": [], "running": False}
+
+
+def _gpu_query() -> dict | None:
+    out = _run([
+        "nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}",
+        "--format=csv,noheader,nounits",
+    ], timeout=5) or ""
+    gpu = parse_gpu_query(out)
+    if gpu is None and "clocks_event_reasons" in out:
+        # Older drivers only know the pre-2023 name of the throttle field.
+        legacy = [f.replace("clocks_event_reasons", "clocks_throttle_reasons") for f in GPU_FIELDS]
+        gpu = parse_gpu_query(_run([
+            "nvidia-smi", f"--query-gpu={','.join(legacy)}",
+            "--format=csv,noheader,nounits",
+        ], timeout=5) or "")
+    return gpu
+
+
+def _refresh_processes() -> None:
+    try:
+        out = _run(["nvidia-smi"], timeout=10)
+        if out is not None:
+            _PROCESSES_CACHE["value"] = parse_gpu_processes(out)
+    finally:
+        _PROCESSES_CACHE["at"] = time.monotonic()
+        _PROCESSES_CACHE["running"] = False
+
+
+def _gpu_processes() -> list[dict]:
+    """Last known VRAM users; refreshed on a side thread so it never slows a reading."""
+    if (not _PROCESSES_CACHE.get("running")
+            and time.monotonic() - _PROCESSES_CACHE["at"] >= _PROCESSES_TTL):
+        _PROCESSES_CACHE["running"] = True
+        threading.Thread(target=_refresh_processes, name="hivi-gpu-procs", daemon=True).start()
+    return _PROCESSES_CACHE["value"]
+
+
 def collect_fast() -> dict:
     """Collect short-lived probes used by the status chip and panel."""
     return {
-        "gpu": parse_gpu_query(_run([
-            "nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}",
-            "--format=csv,noheader,nounits",
-        ], timeout=10) or ""),
-        "processes": parse_gpu_processes(_run(["nvidia-smi"], timeout=10) or ""),
+        "gpu": _gpu_query(),
+        "processes": _gpu_processes(),
         "system": _system_snapshot(),
     }
 

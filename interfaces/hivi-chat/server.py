@@ -15,14 +15,20 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import aux_services
+import backups
+import chat_history
 import gpu_doctor
 import httpx
+import memory_engine
 import model_router
+import personal_memory as pm
+import soul
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from haie import plan_request
 from hivi_paths import paths
@@ -54,7 +60,9 @@ HERE = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    backups.start_scheduler()
     yield
+    memory_engine.EXTRACTOR.cancel()
     # Side services are HIVI-owned processes; don't leave them running.
     await asyncio.to_thread(aux_services.stop_all)
 
@@ -66,7 +74,8 @@ _HAIE_EXPOSE = (
     "X-HIVI-HAIE-Deliverable, X-HIVI-HAIE-Reasoning, X-HIVI-HAIE-Length, "
     "X-HIVI-HAIE-Temp, X-HIVI-HAIE-Max-Tokens, X-HIVI-HAIE-Think, "
     "X-HIVI-Adaptive-Bucket, X-HIVI-Adaptive-Temp, "
-    "X-HIVI-Adaptive-Max-Tokens, X-HIVI-Adaptive-Think"
+    "X-HIVI-Adaptive-Max-Tokens, X-HIVI-Adaptive-Think, "
+    "X-HIVI-Memory, X-HIVI-Mood, X-HIVI-Recalled"
 )
 # How long a memory (Hindsight) request may wait for a model switch to finish,
 # and how long a switch waits for in-flight memory requests before proceeding.
@@ -79,14 +88,22 @@ _SWITCH_DRAIN_S = float(os.environ.get("HIVI_SWITCH_DRAIN_S", "600"))
 # A memory call cut off by a switch is resent this many times.
 _MEMORY_RETRIES = int(os.environ.get("HIVI_MEMORY_RETRIES", "2"))
 
-_FAST_PROBE_TTL = 3.0
+# Live GPU readings: a fresh nvidia-smi sample at most every 1.5 s. A request never
+# waits behind a probe once there is a reading: it gets the last one (with its age)
+# while the refresh runs in the background.
+_FAST_PROBE_TTL = 1.5
 _SLOW_PROBE_TTL = 60.0
-_FAST_PROBE_TIMEOUT = 15.0
+_FAST_PROBE_TIMEOUT = 6.0
 _SLOW_PROBE_TIMEOUT = 75.0
-_FAST_CACHE = {"at": 0.0, "value": None}
+# The first slow probe (llama-server --list-devices) gets this long before the
+# response goes out without its warnings; they appear on a later poll.
+_SLOW_FIRST_WAIT = 2.0
+# A GPU reading this old is still shown if nvidia-smi hiccups, marked stale.
+_GPU_KEEP_S = 30.0
+_FAST_WAIT = 1.2
+_FAST_CACHE = {"at": 0.0, "value": None, "gpu_at": 0.0, "gpu_wall": None}
 _SLOW_CACHE = {"at": 0.0, "key": None, "value": None}
-_FAST_CACHE_LOCK = asyncio.Lock()
-_SLOW_CACHE_LOCK = asyncio.Lock()
+_PROBE_TASKS: dict[str, asyncio.Task] = {}
 
 
 class BackendGate:
@@ -274,38 +291,85 @@ async def api_status():
     return out
 
 
-async def _cached_fast_probe() -> dict | None:
+def _probe_task(name: str, make) -> asyncio.Task:
+    """One running probe per kind, shared by every request that needs it."""
+    task = _PROBE_TASKS.get(name)
+    if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+        task = asyncio.get_running_loop().create_task(make())
+        _PROBE_TASKS[name] = task
+    return task
+
+
+async def _run_fast_probe() -> None:
+    try:
+        value = await asyncio.wait_for(
+            asyncio.to_thread(gpu_doctor.collect_fast),
+            timeout=_FAST_PROBE_TIMEOUT,
+        )
+    except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
+        value = None
     now = time.monotonic()
-    async with _FAST_CACHE_LOCK:
-        if now - _FAST_CACHE["at"] < _FAST_PROBE_TTL:
-            return _FAST_CACHE["value"]
+    previous = _FAST_CACHE["value"] or {}
+    if value is None or not value.get("gpu"):
+        # nvidia-smi can miss a beat under heavy load: keep the last GPU reading for
+        # a while (marked stale) instead of blanking the chip.
+        kept = previous.get("gpu")
+        gpu_at = _FAST_CACHE.get("gpu_at", 0.0)
+        if kept and now - gpu_at < _GPU_KEEP_S:
+            value = dict(value or {})
+            value["gpu"] = kept
+            value.setdefault("processes", previous.get("processes") or [])
+            value.setdefault("system", previous.get("system") or {})
+            _FAST_CACHE.update(at=now, value=value, gpu_wall=_FAST_CACHE.get("gpu_wall"))
+            return
+        _FAST_CACHE.update(at=now, value=value, gpu_at=0.0, gpu_wall=None)
+        return
+    _FAST_CACHE.update(at=now, value=value, gpu_at=now, gpu_wall=time.time())
+
+
+async def _cached_fast_probe() -> dict | None:
+    fresh = time.monotonic() - _FAST_CACHE["at"] < _FAST_PROBE_TTL
+    if fresh:
+        return _FAST_CACHE["value"]
+    task = _probe_task("fast", _run_fast_probe)
+    if _FAST_CACHE["at"] == 0.0:
+        # Nothing to show yet: wait for the first reading.
+        await asyncio.shield(task)
+    else:
+        # A normal reading takes well under a second; if nvidia-smi is slow right
+        # now, answer with the last reading and let the probe finish on its own.
         try:
-            value = await asyncio.wait_for(
-                asyncio.to_thread(gpu_doctor.collect_fast),
-                timeout=_FAST_PROBE_TIMEOUT,
-            )
-        except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
-            value = None
-        _FAST_CACHE.update(at=time.monotonic(), value=value)
-        return value
+            await asyncio.wait_for(asyncio.shield(task), timeout=_FAST_WAIT)
+        except TimeoutError:
+            pass
+    return _FAST_CACHE["value"]
+
+
+async def _run_slow_probe(key) -> None:
+    try:
+        value = await asyncio.wait_for(
+            asyncio.to_thread(gpu_doctor.collect_slow),
+            timeout=_SLOW_PROBE_TIMEOUT,
+        )
+    except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
+        value = None
+    _SLOW_CACHE.update(at=time.monotonic(), key=key, value=value)
 
 
 async def _cached_slow_probe() -> dict | None:
     key = (STATE.model_id, STATE.engine)
-    now = time.monotonic()
-    async with _SLOW_CACHE_LOCK:
-        if (_SLOW_CACHE["key"] == key
-                and now - _SLOW_CACHE["at"] < _SLOW_PROBE_TTL):
-            return _SLOW_CACHE["value"]
+    if (_SLOW_CACHE["key"] == key
+            and time.monotonic() - _SLOW_CACHE["at"] < _SLOW_PROBE_TTL):
+        return _SLOW_CACHE["value"]
+    # Slow probes (llama-server --list-devices, power APIs) refresh in the
+    # background; the live GPU readings never wait for them.
+    task = _probe_task("slow", lambda: _run_slow_probe(key))
+    if _SLOW_CACHE["at"] == 0.0:
         try:
-            value = await asyncio.wait_for(
-                asyncio.to_thread(gpu_doctor.collect_slow),
-                timeout=_SLOW_PROBE_TIMEOUT,
-            )
-        except Exception:  # noqa: BLE001 - a failed probe must not fail /api/health
-            value = None
-        _SLOW_CACHE.update(at=time.monotonic(), key=key, value=value)
-        return value
+            await asyncio.wait_for(asyncio.shield(task), timeout=_SLOW_FIRST_WAIT)
+        except TimeoutError:
+            pass
+    return _SLOW_CACHE["value"]
 
 
 def _warning_text(finding: dict) -> tuple[str, str] | None:
@@ -411,8 +475,12 @@ async def api_health():
     model = _health_model(status)
     speed = status.get("speed")
     gpu = fast.get("gpu")
+    gpu_wall = _FAST_CACHE.get("gpu_wall")
+    gpu_age = None if gpu is None or gpu_wall is None else max(0.0, time.time() - gpu_wall)
     if gpu is not None:
         gpu = dict(gpu)
+        gpu["age_s"] = None if gpu_age is None else round(gpu_age, 1)
+        gpu["stale"] = gpu_age is not None and gpu_age > 10
         total = gpu.get("vram_total_mib")
         used = gpu.get("vram_used_mib")
         gpu["vram_free_mib"] = (
@@ -583,6 +651,7 @@ class _SpeedTracker:
         self.content_chunks = 0
         self.server_tps: float | None = None
         self.server_tokens: int | None = None
+        self.text: list[str] = []   # reply content, for the memory pass
 
     def _event(self, data: str) -> None:
         if not data or data == "[DONE]":
@@ -616,6 +685,12 @@ class _SpeedTracker:
                 self.first_content = now
             self.last_content = now
             self.content_chunks += 1
+            if sum(map(len, self.text)) < 20000:
+                self.text.append(piece)
+
+    @property
+    def reply_text(self) -> str:
+        return "".join(self.text)
 
     def feed(self, chunk: bytes) -> None:
         self.buffer += chunk.decode("utf-8", errors="replace")
@@ -685,6 +760,7 @@ async def _proxy_stream(
     speed_started: float | None = None,
     speed_model: str | None = None,
     speed_engine: str | None = None,
+    on_reply: Callable[[str], None] | None = None,
 ) -> StreamingResponse:
     """Pass through SSE / chunked bodies without buffering the full reply.
 
@@ -733,6 +809,8 @@ async def _proxy_stream(
                 tracker.finish()
             if on_close:
                 on_close()
+            if on_reply and tracker:
+                on_reply(tracker.reply_text)
 
     out_headers = {
         "Cache-Control": "no-cache",
@@ -778,6 +856,429 @@ async def embeddings_proxy(request: Request):
 @app.post("/rerank")
 async def rerank_proxy(request: Request):
     return await _aux_proxy(RERANKER, request, "v1/rerank")
+
+
+
+
+# --------------------------------------------------------------------------- #
+# Personal memory, mood and character around each HIVI chat (MEM / SOUL)
+# --------------------------------------------------------------------------- #
+
+def _last_user_text(body: dict) -> str:
+    msgs = body.get("messages")
+    if not isinstance(msgs, list):
+        return ""
+    for m in reversed(msgs):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, list):
+            return " ".join(str(p.get("text") or "") for p in c if isinstance(p, dict)).strip()
+        return str(c or "").strip()
+    return ""
+
+
+def _chat_context(request: Request) -> dict[str, Any]:
+    h = request.headers
+    return {
+        "hivi_chat": h.get("x-hivi-chat") is not None,
+        "chat_id": (h.get("x-hivi-chat") or "").strip()[:64] or None,
+        "title": (h.get("x-hivi-chat-title") or "").strip()[:120] or None,
+        "temporary": h.get("x-hivi-temporary", "").strip() in ("1", "true", "yes"),
+        "internal": bool(h.get("x-hivi-internal")),
+    }
+
+
+def _command_reply(kind: str, result: dict[str, Any], user_name: str) -> str:
+    if kind == "remember":
+        status = result.get("status")
+        if status == "added":
+            return "Noted, I'll remember that."
+        if status == "duplicate":
+            return "I already have that one."
+        if status == "sensitive":
+            return ("I don't keep passwords, card or ID numbers or keys, even when asked. "
+                    "That one stays out of memory.")
+        if status == "disabled":
+            return "Memory is off right now. Turn it on in Settings and I'll keep it."
+        return "I couldn't make a memory out of that. Try a plain sentence about you."
+    removed = result.get("removed") or []
+    if removed:
+        lines = "\n".join(f"- {m['text']}" for m in removed)
+        return f"Forgotten:\n{lines}"
+    return "I couldn't find a memory that matches. Settings → Memory lists everything I have."
+
+
+def _sse_text(text: str, model: str | None, extra: dict[str, str] | None = None) -> StreamingResponse:
+    """A streamed reply HIVI writes itself (memory commands), in OpenAI's SSE shape."""
+    cid = f"hivi-{int(time.time() * 1000)}"
+    created = int(time.time())
+
+    def chunk(delta: dict, finish: str | None = None) -> bytes:
+        obj = {"id": cid, "object": "chat.completion.chunk", "created": created,
+               "model": model or "hivi",
+               "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+        return f"data: {json.dumps(obj)}\n\n".encode()
+
+    async def gen():
+        yield chunk({"role": "assistant", "content": ""})
+        yield chunk({"content": text})
+        yield chunk({}, "stop")
+        yield b"data: [DONE]\n\n"
+
+    headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+               "Access-Control-Expose-Headers": _HAIE_EXPOSE, "X-HIVI-HAIE-Path": "memory"}
+    headers.update(extra or {})
+    return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+def _json_reply(text: str, model: str | None) -> JSONResponse:
+    return JSONResponse({
+        "id": f"hivi-{int(time.time() * 1000)}", "object": "chat.completion",
+        "created": int(time.time()), "model": model or "hivi",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }, headers={"X-HIVI-HAIE-Path": "memory"})
+
+
+async def _memory_command(kind: str, fact: str, ctx: dict[str, Any]) -> dict[str, Any]:
+    store = pm.store()
+    if not store.setting("memory_enabled"):
+        return {"status": "disabled"}
+    batch = store.new_batch()
+    if kind == "remember":
+        status, mem = await asyncio.to_thread(
+            store.add, fact, origin="manual", chat_id=ctx["chat_id"], chat_title=ctx["title"],
+            batch=batch)
+        event = memory_engine.MemoryEvent(batch=batch, added=[mem] if status == "added" else [])
+        if event.changed and ctx["chat_id"]:
+            memory_engine.EXTRACTOR.events[ctx["chat_id"]] = event
+        return {"status": status, "memory": mem, "event": event.to_dict() if event.changed else None}
+    removed = await asyncio.to_thread(store.forget, fact, batch=batch)
+    event = memory_engine.MemoryEvent(batch=batch, removed=removed)
+    if removed and ctx["chat_id"]:
+        memory_engine.EXTRACTOR.events[ctx["chat_id"]] = event
+    return {"status": "forgot" if removed else "none", "removed": removed,
+            "event": event.to_dict() if removed else None}
+
+
+async def _prepare_chat(body: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build HIVI's real system prompt: character, loyalty, profile, recall, mood."""
+    store = pm.store()
+    settings = await asyncio.to_thread(store.settings)
+    user_text = _last_user_text(body)
+    headers: dict[str, str] = {}
+    use_memory = bool(settings["memory_enabled"]) and not ctx["temporary"]
+    profile = ""
+    recalled = ""
+    if use_memory:
+        items = await asyncio.to_thread(store.all)
+        chosen = pm.profile_memories(items)
+        profile = pm.profile_block(chosen, settings.get("user_name") or "")
+        chosen_ids = {m["id"] for m in chosen}
+        hits = [m for m in await memory_engine.RECALL.for_message(user_text)
+                if m["id"] not in chosen_ids]
+        if hits:
+            recalled = ("Also relevant to this message, from earlier chats:\n"
+                        + "\n".join(f"- {m['text']}" for m in hits))
+            headers["X-HIVI-Recalled"] = str(len(hits))
+    elif settings.get("user_name") and not ctx["temporary"]:
+        profile = pm.profile_block([], settings["user_name"])
+    mood = soul.read_mood(user_text) if settings["mood_enabled"] else None
+    if mood is not None and mood.label != "neutral":
+        headers["X-HIVI-Mood"] = f"{mood.label} {mood.intensity}"
+    client_system = next((m.get("content") for m in body.get("messages", [])
+                          if isinstance(m, dict) and m.get("role") == "system"), None)
+    base = client_system if isinstance(client_system, str) and client_system.strip() else soul.BASE
+    system = soul.build_system_prompt(profile=profile, recalled=recalled, mood=mood,
+                                      personality=bool(settings["personality"]), base=base)
+    msgs = [m for m in body.get("messages", []) if not (isinstance(m, dict) and m.get("role") == "system")]
+    out = dict(body)
+    out["messages"] = [{"role": "system", "content": system}, *msgs]
+    if use_memory:
+        headers["X-HIVI-Memory"] = "on"
+    elif ctx["temporary"]:
+        headers["X-HIVI-Memory"] = "temporary"
+    else:
+        headers["X-HIVI-Memory"] = "off"
+    return out, headers
+
+
+def _schedule_extraction(user_text: str, reply_text: str, ctx: dict[str, Any]) -> None:
+    if ctx["temporary"] or not user_text or not reply_text.strip():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    settings = pm.store().settings()
+    if not (settings["memory_enabled"] and settings["auto_memory"]):
+        return
+
+    async def wait_idle() -> None:
+        # Let the GPU go quiet: no chat in flight, and a short pause so a follow-up
+        # message (which cancels this pass) gets priority.
+        await asyncio.sleep(1.5)
+        for _ in range(600):
+            if GATE.foreground == 0 and GATE.is_open:
+                return
+            await asyncio.sleep(0.5)
+
+    async def run() -> None:
+        if not await GATE.enter(30.0, background=True):
+            return
+        try:
+            await memory_engine.EXTRACTOR.run(
+                backend_base=f"http://127.0.0.1:{_own_port()}", model=STATE.model_id or "local",
+                user_text=user_text, reply_text=reply_text, chat_id=ctx["chat_id"],
+                chat_title=ctx["title"], user_name=settings.get("user_name") or "",
+                wait_idle=wait_idle,
+            )
+        finally:
+            GATE.leave(background=True)
+
+    loop.call_soon(lambda: memory_engine.EXTRACTOR.schedule(run()))
+
+
+_OWN_PORT = {"value": 7860}
+
+
+def _own_port() -> int:
+    return _OWN_PORT["value"]
+
+
+@app.get("/api/memory")
+async def api_memory(q: str = ""):
+    store = pm.store()
+    items = await asyncio.to_thread(store.all, q)
+    settings = await asyncio.to_thread(store.settings)
+    return {"memories": items, "count": len(items), "settings": settings,
+            "categories": list(pm.CATEGORIES), "feedback": store.feedback_stats(),
+            "learning": memory_engine.EXTRACTOR.busy()}
+
+
+@app.post("/api/memory")
+async def api_memory_add(request: Request):
+    body = await request.json()
+    text = str(body.get("text") or "")
+    status, mem = await asyncio.to_thread(pm.store().add, text, category=body.get("category"),
+                                          origin="manual")
+    if status == "sensitive":
+        raise HTTPException(400, "HIVI never stores passwords, card or ID numbers or keys")
+    if status == "empty":
+        raise HTTPException(400, "write one short sentence")
+    return {"status": status, "memory": mem}
+
+
+@app.patch("/api/memory/{memory_id}")
+async def api_memory_update(memory_id: int, request: Request):
+    body = await request.json()
+    status, mem = await asyncio.to_thread(pm.store().update, memory_id, body.get("text"),
+                                          body.get("category"))
+    if status == "missing":
+        raise HTTPException(404, "no such memory")
+    if status == "sensitive":
+        raise HTTPException(400, "HIVI never stores passwords, card or ID numbers or keys")
+    if status == "empty":
+        raise HTTPException(400, "write one short sentence")
+    return {"status": status, "memory": mem}
+
+
+@app.delete("/api/memory/{memory_id}")
+async def api_memory_delete(memory_id: int):
+    old = await asyncio.to_thread(pm.store().delete, memory_id)
+    if old is None:
+        raise HTTPException(404, "no such memory")
+    return {"status": "deleted", "memory": old}
+
+
+@app.post("/api/memory/delete-all")
+async def api_memory_delete_all(request: Request):
+    body = await request.json()
+    if body.get("confirm") != "DELETE":
+        raise HTTPException(400, "send {\"confirm\": \"DELETE\"}")
+    n = await asyncio.to_thread(pm.store().delete_all)
+    memory_engine.EXTRACTOR.events.clear()
+    return {"status": "deleted", "count": n}
+
+
+@app.post("/api/memory/undo")
+async def api_memory_undo(request: Request):
+    body = await request.json()
+    batch = str(body.get("batch") or "")
+    if not batch:
+        raise HTTPException(400, "batch required")
+    n = await asyncio.to_thread(pm.store().undo, batch)
+    for cid, ev in list(memory_engine.EXTRACTOR.events.items()):
+        if ev.batch == batch:
+            del memory_engine.EXTRACTOR.events[cid]
+    return {"status": "undone", "count": n}
+
+
+@app.get("/api/memory/events")
+async def api_memory_events(chat: str = ""):
+    ev = memory_engine.EXTRACTOR.events.get(chat) if chat else memory_engine.EXTRACTOR.last_event
+    return {"event": ev.to_dict() if ev else None, "learning": memory_engine.EXTRACTOR.busy()}
+
+
+@app.post("/api/memory/settings")
+async def api_memory_settings(request: Request):
+    body = await request.json()
+    return {"settings": await asyncio.to_thread(pm.store().update_settings, body)}
+
+
+@app.get("/api/memory/export")
+async def api_memory_export(format: str = "json"):
+    store = pm.store()
+    stamp = time.strftime("%Y%m%d")
+    if format == "md":
+        return PlainTextResponse(
+            await asyncio.to_thread(store.export_markdown), media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="hivi-memory-{stamp}.md"'})
+    return JSONResponse(
+        await asyncio.to_thread(store.export_json),
+        headers={"Content-Disposition": f'attachment; filename="hivi-memory-{stamp}.json"'})
+
+
+@app.post("/api/memory/import")
+async def api_memory_import(request: Request):
+    raw = (await request.body()).decode("utf-8", errors="replace")
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("application/json"):
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = {}
+        if isinstance(body, dict) and isinstance(body.get("content"), str):
+            raw = body["content"]
+    items = pm.parse_import(raw)
+    if not items:
+        raise HTTPException(400, "no memories found in that file")
+    counts = await asyncio.to_thread(pm.store().import_items, items)
+    return {"status": "imported", **counts}
+
+
+@app.post("/api/feedback")
+async def api_feedback(request: Request):
+    body = await request.json()
+    try:
+        rating = int(body.get("rating"))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "rating must be 1 or -1") from e
+    fid = await asyncio.to_thread(
+        pm.store().add_feedback, rating=rating, prompt=str(body.get("prompt") or ""),
+        reply=str(body.get("reply") or ""), better=str(body.get("better") or ""),
+        chat_id=body.get("chat_id"), model=STATE.model_id)
+    return {"status": "saved", "id": fid, "stats": pm.store().feedback_stats()}
+
+
+@app.get("/api/feedback/export")
+async def api_feedback_export():
+    rows = await asyncio.to_thread(pm.store().feedback_rows)
+    lines = [json.dumps({"prompt": r["prompt"], "reply": r["reply"], "rating": r["rating"],
+                         "better": r["better"], "model": r["model"], "at": r["at"]})
+             for r in rows]
+    return PlainTextResponse("\n".join(lines), media_type="application/jsonl",
+                             headers={"Content-Disposition": 'attachment; filename="hivi-feedback.jsonl"'})
+
+
+@app.delete("/api/feedback")
+async def api_feedback_delete():
+    return {"status": "deleted", "count": await asyncio.to_thread(pm.store().delete_feedback)}
+
+
+@app.get("/api/backups")
+async def api_backups():
+    return {"snapshots": await asyncio.to_thread(backups.list_snapshots),
+            **await asyncio.to_thread(backups.last_backup)}
+
+
+@app.post("/api/backups")
+async def api_backups_create(request: Request):
+    body = await request.json() if int(request.headers.get("content-length") or 0) else {}
+    reason = str((body or {}).get("reason") or "manual")[:24]
+    try:
+        snap = await asyncio.to_thread(backups.create_snapshot, reason)
+    except OSError as e:
+        raise HTTPException(500, f"could not write the backup: {e}") from e
+    return {"status": "created", "snapshot": snap, **backups.last_backup()}
+
+
+@app.post("/api/backups/restore")
+async def api_backups_restore(request: Request):
+    body = await request.json()
+    name = str(body.get("name") or "")
+    if body.get("confirm") != "RESTORE":
+        raise HTTPException(400, "send {\"confirm\": \"RESTORE\"}")
+    try:
+        result = await asyncio.to_thread(backups.restore_snapshot, name)
+    except FileNotFoundError as e:
+        raise HTTPException(404, "no such snapshot") from e
+    memory_engine.EXTRACTOR.events.clear()
+    return {"status": "restored", **result}
+
+
+@app.get("/api/chats")
+async def api_chats(q: str = ""):
+    st = chat_history.store()
+    return {"chats": await asyncio.to_thread(st.search if q.strip() else st.list, *((q,) if q.strip() else ())),
+            "count": await asyncio.to_thread(st.count)}
+
+
+@app.get("/api/chats/{chat_id}")
+async def api_chat_get(chat_id: str):
+    chat = await asyncio.to_thread(chat_history.store().get, chat_id)
+    if chat is None:
+        raise HTTPException(404, "no such chat")
+    return chat
+
+
+@app.put("/api/chats/{chat_id}")
+async def api_chat_save(chat_id: str, request: Request):
+    body = await request.json()
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(400, "messages required")
+    try:
+        return await asyncio.to_thread(chat_history.store().save, chat_id, messages,
+                                       model=body.get("model") or STATE.model_id, title=body.get("title"))
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.patch("/api/chats/{chat_id}")
+async def api_chat_patch(chat_id: str, request: Request):
+    body = await request.json()
+    st = chat_history.store()
+    ok = True
+    if "title" in body:
+        ok = await asyncio.to_thread(st.rename, chat_id, str(body["title"]))
+    if "pinned" in body:
+        ok = await asyncio.to_thread(st.pin, chat_id, bool(body["pinned"])) and ok
+    if not ok:
+        raise HTTPException(404, "no such chat")
+    return {"status": "ok"}
+
+
+@app.delete("/api/chats/{chat_id}")
+async def api_chat_delete(chat_id: str):
+    if not await asyncio.to_thread(chat_history.store().delete, chat_id):
+        raise HTTPException(404, "no such chat")
+    return {"status": "deleted"}
+
+
+@app.post("/api/chats/delete-all")
+async def api_chats_delete_all(request: Request):
+    body = await request.json()
+    if body.get("confirm") != "DELETE":
+        raise HTTPException(400, "send {\"confirm\": \"DELETE\"}")
+    return {"status": "deleted", "count": await asyncio.to_thread(chat_history.store().delete_all)}
+
+
+@app.get("/api/soul/mood")
+async def api_soul_mood(text: str = ""):
+    return soul.read_mood(text).to_dict()
 
 
 # --------------------------------------------------------------------------- #
@@ -862,6 +1363,27 @@ async def openai_proxy(path: str, request: Request):
 
     speed_started = time.perf_counter()
     raw = await request.body()
+    ctx = _chat_context(request)
+    user_text = ""
+    memory_headers: dict[str, str] = {}
+    if ctx["hivi_chat"] and path.endswith("chat/completions"):
+        try:
+            body_obj = json.loads(raw.decode("utf-8"))
+        except ValueError:
+            body_obj = None
+        if isinstance(body_obj, dict):
+            user_text = _last_user_text(body_obj)
+            command = pm.parse_command(user_text) if not ctx["temporary"] else None
+            if command:
+                memory_engine.EXTRACTOR.cancel()
+                result = await _memory_command(command[0], command[1], ctx)
+                reply = _command_reply(command[0], result, "")
+                if body_obj.get("stream"):
+                    return _sse_text(reply, STATE.model_id, {"X-HIVI-Memory": "command"})
+                return _json_reply(reply, STATE.model_id)
+            memory_engine.EXTRACTOR.cancel()   # a new message outranks learning from the last one
+            body_obj, memory_headers = await _prepare_chat(body_obj, ctx)
+            raw = json.dumps(body_obj).encode("utf-8")
     resolved = await asyncio.to_thread(model_router.resolve, _requested_model(raw))
     await _enter_with_model(resolved.model if resolved else None)
     released = False
@@ -889,6 +1411,11 @@ async def openai_proxy(path: str, request: Request):
         if resolved is not None:
             extra["X-HIVI-Model"] = resolved.model.id
             extra["X-HIVI-Model-Via"] = resolved.via
+        extra.update(memory_headers)
+        on_reply = None
+        if ctx["hivi_chat"] and user_text:
+            def on_reply(reply_text: str, _u=user_text, _c=ctx) -> None:
+                _schedule_extraction(_u, reply_text, _c)
 
         async def receive():
             return {"type": "http.request", "body": adapted, "more_body": False}
@@ -905,6 +1432,7 @@ async def openai_proxy(path: str, request: Request):
                 speed_started=speed_started,
                 speed_model=STATE.name or STATE.model_id or _requested_model(raw),
                 speed_engine=STATE.engine,
+                on_reply=on_reply,
             )
             handed_off = True
             return response
@@ -915,6 +1443,12 @@ async def openai_proxy(path: str, request: Request):
             STATE.name or STATE.model_id or _requested_model(raw),
             STATE.engine,
         )
+        if on_reply:
+            try:
+                data = json.loads(response.body)
+                on_reply(str(((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""))
+            except (ValueError, AttributeError):
+                pass
         return response
     finally:
         if not handed_off:
@@ -1018,6 +1552,7 @@ def main() -> None:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7860)
     args = ap.parse_args()
+    _OWN_PORT["value"] = args.port
     print(f"HIVI UI  http://{args.host}:{args.port}")
     print("API      /api/models  /api/select  /api/status  /api/engine")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

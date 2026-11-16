@@ -42,13 +42,17 @@ def _slow(*, devices=None, battery=None):
     }
 
 
+def _reset_caches():
+    server._FAST_CACHE.update(at=0.0, value=None, gpu_at=0.0, gpu_wall=None)
+    server._SLOW_CACHE.update(at=0.0, key=None, value=None)
+    server._PROBE_TASKS.clear()
+
+
 @pytest.fixture(autouse=True)
 def reset_health_cache():
-    server._FAST_CACHE.update(at=0.0, value=None)
-    server._SLOW_CACHE.update(at=0.0, key=None, value=None)
+    _reset_caches()
     yield
-    server._FAST_CACHE.update(at=0.0, value=None)
-    server._SLOW_CACHE.update(at=0.0, key=None, value=None)
+    _reset_caches()
 
 
 async def test_health_shape_and_levels(monkeypatch):
@@ -210,3 +214,89 @@ async def test_stream_without_timings_is_approximate(monkeypatch):
     [chunk async for chunk in response.body_iterator]
     assert server.STATE.last_speed["approx"] is True
     assert server.STATE.last_speed["tokens"] == 2
+
+
+async def test_readings_stay_live_while_slow_probe_runs(monkeypatch):
+    """A slow llama-server --list-devices must never hold back the GPU readings."""
+    temps = iter(range(50, 100))
+    monkeypatch.setattr(server.gpu_doctor, "collect_fast", lambda: _fast(temp=next(temps)))
+    monkeypatch.setattr(server, "_SLOW_FIRST_WAIT", 0.05)
+    monkeypatch.setattr(server, "_FAST_PROBE_TTL", 0.0)
+
+    def slow_sync():
+        time.sleep(0.6)
+        return _slow()
+
+    monkeypatch.setattr(server.gpu_doctor, "collect_slow", slow_sync)
+    async with _client() as client:
+        seen = []
+        started = time.monotonic()
+        for _ in range(3):
+            body = (await client.get("/api/health")).json()
+            seen.append(body["gpu"]["temp_c"])
+        elapsed = time.monotonic() - started
+    assert elapsed < 0.5
+    assert len(set(seen)) == 3
+
+
+async def test_slow_nvidia_smi_answers_with_last_reading(monkeypatch):
+    calls = {"n": 0}
+
+    def fast_sync():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            time.sleep(0.5)
+        return _fast(temp=60 + calls["n"])
+
+    monkeypatch.setattr(server.gpu_doctor, "collect_fast", fast_sync)
+    monkeypatch.setattr(server.gpu_doctor, "collect_slow", _slow)
+    monkeypatch.setattr(server, "_FAST_PROBE_TTL", 0.0)
+    monkeypatch.setattr(server, "_FAST_WAIT", 0.05)
+    async with _client() as client:
+        first = (await client.get("/api/health")).json()
+        started = time.monotonic()
+        second = (await client.get("/api/health")).json()
+        assert time.monotonic() - started < 0.3
+        assert second["gpu"]["temp_c"] == first["gpu"]["temp_c"] == 61
+        await asyncio.sleep(0.6)
+        third = (await client.get("/api/health")).json()
+    assert third["gpu"]["temp_c"] == 62
+
+
+async def test_failed_probe_keeps_last_reading_then_drops_it(monkeypatch):
+    state = {"ok": True}
+
+    def fast_sync():
+        if not state["ok"]:
+            raise TimeoutError("nvidia-smi hung")
+        return _fast(temp=70)
+
+    monkeypatch.setattr(server.gpu_doctor, "collect_fast", fast_sync)
+    monkeypatch.setattr(server.gpu_doctor, "collect_slow", _slow)
+    monkeypatch.setattr(server, "_FAST_PROBE_TTL", 0.0)
+    async with _client() as client:
+        assert (await client.get("/api/health")).json()["gpu"]["stale"] is False
+        state["ok"] = False
+        server._FAST_CACHE["gpu_wall"] -= 12  # last good reading is now 12 s old
+        kept = (await client.get("/api/health")).json()["gpu"]
+        assert kept["temp_c"] == 70 and kept["stale"] is True and kept["age_s"] >= 12
+        server._FAST_CACHE["gpu_at"] -= server._GPU_KEEP_S
+        await client.get("/api/health")
+        assert (await client.get("/api/health")).json()["gpu"] is None
+
+
+def test_process_table_never_blocks_a_reading(monkeypatch):
+    import gpu_doctor
+
+    def slow_run(args, timeout=20.0):
+        if len(args) == 1:
+            time.sleep(0.5)
+            return "| Processes: |"
+        return "GPU, 8151, 4000, 10, 40, 80, 80, P0, 2400, 3090, 60, 0x0"
+
+    monkeypatch.setattr(gpu_doctor, "_run", slow_run)
+    gpu_doctor._PROCESSES_CACHE.update(at=0.0, value=[], running=False)
+    started = time.monotonic()
+    out = gpu_doctor.collect_fast()
+    assert time.monotonic() - started < 0.3
+    assert out["gpu"]["temp_c"] == 60

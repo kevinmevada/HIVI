@@ -248,17 +248,21 @@
     }
 
     .status-area {
-      justify-self: end;
+      justify-self: stretch;
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 10px;
       min-width: 0;
+      /* Its pieces hide in order when the window is narrow (see @container status) */
+      container: status / inline-size;
     }
 
     .status {
       display: flex;
       align-items: center;
       gap: 7px;
+      flex: 0 1 auto;
       min-width: 0;
       font-size: 12px;
       color: var(--label-2);
@@ -405,8 +409,35 @@
       display: none;
     }
 
-    .health-panel h2 {
+    .health-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
       margin: 0 0 12px;
+    }
+
+    .health-age {
+      font-size: 11.5px;
+      color: var(--label-3, var(--label-2));
+      font-variant-numeric: tabular-nums;
+    }
+
+    .health-age.stale {
+      color: #ff9f0a;
+    }
+
+    /* Readings stopped coming in: dim the chip so old numbers don't pass as live */
+    .health-chip.stale #healthLabel {
+      opacity: 0.5;
+    }
+
+    #healthLabel {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .health-panel h2 {
+      margin: 0;
       font-size: 15px;
       letter-spacing: -0.02em;
     }
@@ -440,6 +471,8 @@
     }
 
     .health-row span:first-child {
+      flex: none;
+      max-width: 45%;
       color: var(--label-2);
     }
 
@@ -469,6 +502,47 @@
       font-size: 12px;
     }
 
+    #healthLabel span + span::before {
+      content: " · ";
+    }
+
+    /* Narrow windows: give way in this order: engine badge, status text,
+       temperature + speed, then the chip shrinks to its dot. Never overlap the picker. */
+    @container status (max-width: 520px) {
+      .engine {
+        display: none !important;
+      }
+    }
+
+    @container status (max-width: 420px) {
+      .status #statusLine {
+        display: none;
+      }
+    }
+
+    @container status (max-width: 300px) {
+      .health-chip .hc-temp,
+      .health-chip .hc-speed {
+        display: none;
+      }
+    }
+
+    @container status (max-width: 230px) {
+      .health-chip {
+        width: 32px;
+        justify-content: center;
+        padding: 0;
+      }
+
+      .health-chip #healthLabel {
+        display: none;
+      }
+
+      .health-chip.ok .health-dot {
+        display: block;
+      }
+    }
+
     @media (max-width: 760px) {
       .health-chip {
         width: 32px;
@@ -478,6 +552,10 @@
 
       .health-chip #healthLabel {
         display: none;
+      }
+
+      .health-chip.ok .health-dot {
+        display: block;
       }
     }
 
@@ -851,6 +929,642 @@
     .meta button svg {
       width: 14px;
       height: 14px;
+    }
+
+    /* ── Chat history sidebar ── */
+    :root {
+      --side-w: 272px;
+    }
+
+    .side {
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      z-index: 30;
+      width: var(--side-w);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-grouped);
+      border-right: 0.5px solid var(--sep);
+      transform: translateX(-100%);
+      transition: transform 0.28s var(--ease);
+    }
+
+    body.side-open .side {
+      transform: none;
+    }
+
+    body.side-open header,
+    body.side-open #chat,
+    body.side-open .dock {
+      left: var(--side-w);
+    }
+
+    body.side-open header {
+      inset-inline-start: var(--side-w);
+    }
+
+    /* The sidebar carries the brand when open; the header keeps only the toggle */
+    body.side-open header .brand .brand-bunny,
+    body.side-open header .brand .wordmark,
+    body.side-open header #sideBtn {
+      display: none;
+    }
+
+    header,
+    #chat,
+    .dock {
+      transition: left 0.28s var(--ease);
+    }
+
+    .side-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 12px 12px 8px;
+      height: var(--header-h);
+    }
+
+    .side-head .brand {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .side-search {
+      margin: 0 12px 8px;
+      padding: 8px 11px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--fill);
+      color: var(--label);
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .side-new {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 12px 10px;
+      padding: 8px 11px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--label);
+      font: inherit;
+      font-size: 13.5px;
+      font-weight: 600;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .side-new:hover {
+      background: var(--fill);
+    }
+
+    .side-new svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .side-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 8px 12px;
+      list-style: none;
+      margin: 0;
+    }
+
+    .side-group {
+      margin: 10px 8px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--label-3);
+    }
+
+    .chat-item {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 8px 7px 10px;
+      border-radius: 9px;
+      color: var(--label);
+      font-size: 13.5px;
+      cursor: pointer;
+    }
+
+    .chat-item:hover,
+    .chat-item.active {
+      background: var(--fill);
+    }
+
+    .chat-item .t {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .chat-item .snip {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--label-3);
+      font-size: 11.5px;
+    }
+
+    .chat-item .pin {
+      width: 11px;
+      height: 11px;
+      flex: none;
+      color: var(--label-3);
+    }
+
+    .chat-item .acts {
+      display: none;
+      gap: 0;
+      flex: none;
+    }
+
+    .chat-item:hover .acts,
+    .chat-item:focus-within .acts {
+      display: flex;
+    }
+
+    .chat-item .acts .icon-btn {
+      width: 26px;
+      height: 26px;
+    }
+
+    .chat-item .acts .icon-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .chat-item input {
+      flex: 1;
+      min-width: 0;
+      padding: 3px 6px;
+      border: 0.5px solid var(--accent);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--label);
+      font: inherit;
+      font-size: 13.5px;
+    }
+
+    .side-empty {
+      padding: 24px 12px;
+      color: var(--label-3);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: center;
+    }
+
+    .side-foot {
+      padding: 8px 12px 12px;
+      border-top: 0.5px solid var(--sep);
+      font-size: 12px;
+      color: var(--label-3);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .side-foot span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .side-foot button {
+      border: 0;
+      background: none;
+      color: var(--label-2);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .side-foot button:hover {
+      color: var(--red);
+    }
+
+    .side-scrim {
+      display: none;
+    }
+
+    @media (max-width: 900px) {
+      body.side-open header,
+      body.side-open #chat,
+      body.side-open .dock {
+        left: 0;
+      }
+
+      body.side-open header {
+        inset-inline-start: 0;
+      }
+
+      body.side-open .side-scrim {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 29;
+        background: rgba(0, 0, 0, 0.3);
+      }
+    }
+
+    /* ── Settings sheet (Memory · You & HIVI · Backups) ── */
+    .sheet-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      background: rgba(0, 0, 0, 0.34);
+      opacity: 0;
+      transition: opacity 0.22s;
+    }
+
+    .sheet-scrim[hidden] {
+      display: none;
+    }
+
+    .sheet-scrim.show {
+      opacity: 1;
+    }
+
+    .sheet {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 61;
+      width: min(520px, 100vw);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-elev);
+      color: var(--label);
+      border-left: 0.5px solid var(--sep);
+      box-shadow: -18px 0 50px rgba(0, 0, 0, 0.25);
+      transform: translateX(100%);
+      transition: transform 0.3s var(--ease);
+    }
+
+    .sheet[hidden] {
+      display: none;
+    }
+
+    .sheet.show {
+      transform: none;
+    }
+
+    .sheet-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 16px 18px 10px;
+    }
+
+    .sheet-head h2 {
+      margin: 0;
+      flex: 1;
+      font-size: 17px;
+      letter-spacing: -0.02em;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 0 18px 10px;
+      border-bottom: 0.5px solid var(--sep);
+    }
+
+    .tabs button {
+      padding: 7px 12px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--label-2);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .tabs button[aria-selected="true"] {
+      background: var(--fill);
+      color: var(--label);
+    }
+
+    .sheet-body {
+      flex: 1;
+      overflow: auto;
+      padding: 14px 18px 24px;
+    }
+
+    .sheet-body > section[hidden] {
+      display: none;
+    }
+
+    .srow {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 10px 0;
+      border-bottom: 0.5px solid var(--sep);
+      font-size: 13.5px;
+    }
+
+    .srow .sub {
+      display: block;
+      margin-top: 2px;
+      color: var(--label-3);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .srow input[type="text"] {
+      width: 180px;
+      padding: 7px 10px;
+      border: 0.5px solid var(--sep);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--label);
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .toggle {
+      position: relative;
+      flex: none;
+      width: 42px;
+      height: 26px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s var(--ease);
+    }
+
+    .toggle[aria-checked="true"] {
+      background: var(--green);
+    }
+
+    .toggle[aria-checked="true"]::after {
+      transform: translateX(16px);
+    }
+
+    .btn {
+      padding: 7px 13px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      color: var(--label);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--fill-2);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+
+    .btn.danger {
+      color: var(--red);
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .mem-search {
+      width: 100%;
+      margin: 10px 0;
+      padding: 9px 12px;
+      border: 0.5px solid var(--sep);
+      border-radius: 11px;
+      background: var(--bg);
+      color: var(--label);
+      font: inherit;
+      font-size: 13.5px;
+    }
+
+    .mem-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .mem-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 10px;
+      padding: 10px 0;
+      border-bottom: 0.5px solid var(--sep);
+      font-size: 13.5px;
+      line-height: 1.4;
+    }
+
+    .mem-item .cat {
+      grid-column: 1 / -1;
+      font-size: 11.5px;
+      color: var(--label-3);
+    }
+
+    .mem-item .acts {
+      display: flex;
+      gap: 2px;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .mem-item:hover .acts,
+    .mem-item:focus-within .acts {
+      opacity: 1;
+    }
+
+    .mem-item .acts .icon-btn {
+      width: 28px;
+      height: 28px;
+    }
+
+    .mem-item textarea {
+      width: 100%;
+      padding: 7px 10px;
+      border: 0.5px solid var(--accent);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--label);
+      font: inherit;
+      font-size: 13.5px;
+      resize: vertical;
+    }
+
+    .mem-empty {
+      padding: 26px 0;
+      text-align: center;
+      color: var(--label-3);
+      font-size: 13.5px;
+      line-height: 1.5;
+    }
+
+    .snap-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 0.5px solid var(--sep);
+      font-size: 13px;
+    }
+
+    .snap-item .sub {
+      color: var(--label-3);
+      font-size: 12px;
+    }
+
+    .sheet .status-msg {
+      margin: 8px 0 0;
+      min-height: 18px;
+      font-size: 12.5px;
+      color: var(--label-2);
+    }
+
+    .sheet .status-msg.err {
+      color: var(--red);
+    }
+
+    /* "Memory updated" chip under a message */
+    .mem-chip {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      margin: 8px 0 0 2px;
+      padding: 6px 11px;
+      border-radius: 999px;
+      background: var(--fill-2);
+      color: var(--label-2);
+      font-size: 12px;
+      line-height: 1.3;
+      animation: chip-in 0.25s var(--ease);
+    }
+
+    @keyframes chip-in {
+      from {
+        opacity: 0;
+        transform: translateY(4px);
+      }
+    }
+
+    .mem-chip svg {
+      width: 13px;
+      height: 13px;
+      color: var(--teal);
+    }
+
+    .mem-chip button {
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--accent);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .mem-chip .what {
+      max-width: 420px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* 👍 / 👎 in the message footer */
+    .meta .fb {
+      display: inline-flex;
+      gap: 0;
+      margin-left: auto;
+    }
+
+    .meta .fb button.on {
+      color: var(--accent);
+    }
+
+    .fb-form {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: var(--fill-2);
+      font-size: 12.5px;
+    }
+
+    .fb-form textarea {
+      width: 100%;
+      min-height: 54px;
+      padding: 8px 10px;
+      border: 0.5px solid var(--sep);
+      border-radius: 10px;
+      background: var(--bg);
+      color: var(--label);
+      font: inherit;
+      font-size: 13px;
+      resize: vertical;
+    }
+
+    .fb-form .row {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    /* Temporary chat: memory neither read nor written */
+    #tempBtn.on {
+      background: var(--accent);
+      color: var(--on-accent);
+    }
+
+    body.temporary .composer {
+      box-shadow: var(--shadow-composer), 0 0 0 1.5px var(--accent);
     }
 
     .note {
@@ -1335,6 +2049,12 @@
       margin-top: 4px;
     }
 
+    .composer-tools {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .composer .icon-btn {
       width: 34px;
       height: 34px;
@@ -1444,6 +2164,12 @@
         display: none !important;
       }
 
+      /* Column is sized to its content here, so it must not be a size container */
+      .status-area {
+        container-type: normal;
+        gap: 6px;
+      }
+
       #chat {
         padding-left: 16px;
         padding-right: 16px;
@@ -1479,7 +2205,15 @@
 
 <body class="is-empty">
   <header>
-    <div class="brand" title="HIVI"><img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark" data-text="HIVI">HIVI</span></div>
+    <div class="brand" title="HIVI">
+      <button id="sideBtn" class="icon-btn" type="button" title="Chat history (Ctrl+Shift+H)" aria-label="Chat history" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+          <path d="M9.5 4.5v15" />
+        </svg>
+      </button>
+      <img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark" data-text="HIVI">HIVI</span></div>
 
     <div class="picker">
       <div class="select-wrap">
@@ -1506,7 +2240,10 @@
           <span id="healthLabel">— tok/s</span>
         </button>
         <section id="healthPanel" class="health-panel" aria-labelledby="healthTitle" hidden>
-          <h2 id="healthTitle">HIVI status</h2>
+          <div class="health-head">
+            <h2 id="healthTitle">HIVI status</h2>
+            <span id="healthAge" class="health-age"></span>
+          </div>
           <div id="healthContent"></div>
         </section>
       </div>
@@ -1515,6 +2252,13 @@
           aria-hidden="true">
           <path d="M12 3.5v8" />
           <path d="M6.6 6.8a7.5 7.5 0 1 0 10.8 0" />
+        </svg>
+      </button>
+      <button id="settingsBtn" class="icon-btn" type="button" title="Memory & settings" aria-label="Memory and settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
         </svg>
       </button>
       <button id="clearBtn" class="icon-btn" type="button" title="New chat" aria-label="New chat">
@@ -1565,6 +2309,7 @@
           <textarea id="input" rows="1" placeholder="Message HIVI" autofocus></textarea>
 
           <div class="composer-row">
+            <div class="composer-tools">
             <button class="icon-btn" id="attachBtn" type="button"
               title="Add an image (needs a model with a vision projector)" aria-label="Add image" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
@@ -1573,6 +2318,16 @@
                 <circle cx="9" cy="10" r="1.6" />
                 <path d="m4 17 4.6-4.4a1.5 1.5 0 0 1 2 0L15 17" />
                 <path d="m13.5 15 1.9-1.8a1.5 1.5 0 0 1 2 0l3 2.8" />
+              </svg>
+            </button>
+            </div>
+            <div class="composer-tools">
+            <button class="icon-btn" id="tempBtn" type="button" aria-pressed="false"
+              title="Temporary chat: HIVI won't use or save memory in this chat" aria-label="Temporary chat">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5c0 2.2-.8 4.1-2.2 5.6L20 20.5h-8A8.5 8.5 0 0 1 12 3.5z" stroke-dasharray="2.6 2.6" />
+                <path d="M9 12h6" />
               </svg>
             </button>
             <button class="send" id="send" type="submit" aria-label="Send" title="Send (Enter)" disabled>
@@ -1585,6 +2340,7 @@
                 <rect x="7" y="7" width="10" height="10" rx="2" />
               </svg>
             </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1593,6 +2349,121 @@
       <input type="file" id="attachInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
     </form>
   </div>
+
+  <div class="side-scrim" id="sideScrim"></div>
+  <nav class="side" id="side" aria-label="Chat history">
+    <div class="side-head">
+      <span class="brand"><img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark" data-text="HIVI">HIVI</span></span>
+      <button class="icon-btn" id="sideClose" type="button" title="Hide history" aria-label="Hide history">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+          <path d="M9.5 4.5v15" />
+        </svg>
+      </button>
+    </div>
+    <button class="side-new" id="sideNew" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true">
+        <path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13" />
+        <path d="M17.6 3.4a1.9 1.9 0 0 1 2.7 2.7l-7.6 7.6-3.4.8.8-3.4z" />
+      </svg>
+      New chat
+    </button>
+    <input type="search" class="side-search" id="sideSearch" placeholder="Search chats" aria-label="Search chats" />
+    <ul class="side-list" id="sideList"></ul>
+    <div class="side-foot">
+      <span id="sideCount"></span>
+      <button type="button" id="sideClear">Clear history</button>
+    </div>
+  </nav>
+  <div class="sheet-scrim" id="sheetScrim" hidden></div>
+  <aside class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+    <div class="sheet-head">
+      <h2 id="sheetTitle">Memory &amp; settings</h2>
+      <button class="icon-btn" id="sheetClose" type="button" aria-label="Close" title="Close (Esc)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18" />
+        </svg>
+      </button>
+    </div>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="memory" aria-selected="true">Memory</button>
+      <button type="button" role="tab" data-tab="soul" aria-selected="false">You &amp; HIVI</button>
+      <button type="button" role="tab" data-tab="backups" aria-selected="false">Backups</button>
+    </div>
+    <div class="sheet-body">
+      <section id="tab-memory" role="tabpanel">
+        <div class="srow">
+          <span>Memory<span class="sub">HIVI remembers facts about you across chats. Everything stays in <code>data/memory</code> on this PC.</span></span>
+          <button type="button" class="toggle" id="setMemory" role="switch" aria-checked="true" aria-label="Memory"></button>
+        </div>
+        <div class="srow">
+          <span>Learn from chats<span class="sub">After a reply, while the GPU is idle, HIVI notes durable facts you said. Passwords, cards, IDs and keys are never kept.</span></span>
+          <button type="button" class="toggle" id="setAuto" role="switch" aria-checked="true" aria-label="Learn from chats"></button>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn" id="memAddBtn">Add a memory</button>
+          <button type="button" class="btn" id="memExportJson">Export JSON</button>
+          <button type="button" class="btn" id="memExportMd">Export Markdown</button>
+          <button type="button" class="btn" id="memImportBtn">Import</button>
+          <button type="button" class="btn danger" id="memDeleteAll">Delete all</button>
+          <input type="file" id="memImportFile" accept=".json,.md,.txt,application/json,text/markdown,text/plain" hidden />
+        </div>
+        <input type="search" class="mem-search" id="memSearch" placeholder="Search memories" aria-label="Search memories" />
+        <ul class="mem-list" id="memList"></ul>
+        <p class="status-msg" id="memStatus"></p>
+      </section>
+      <section id="tab-soul" role="tabpanel" hidden>
+        <div class="srow">
+          <span>Your name<span class="sub">HIVI uses it now and then, not in every reply.</span></span>
+          <input type="text" id="setName" maxlength="40" placeholder="Name" aria-label="Your name" />
+        </div>
+        <div class="srow">
+          <span>Personality<span class="sub">Composed, warm, a little dry wit. Off gives plain answers.</span></span>
+          <button type="button" class="toggle" id="setPersonality" role="switch" aria-checked="true" aria-label="Personality"></button>
+        </div>
+        <div class="srow">
+          <span>Mood awareness<span class="sub">A quick read of each message (stressed, excited, tired…) shapes how she answers, not what is true. Read in the moment, never stored.</span></span>
+          <button type="button" class="toggle" id="setMood" role="switch" aria-checked="true" aria-label="Mood awareness"></button>
+        </div>
+        <div class="srow">
+          <span>Loyalty<span class="sub">Always on: works for you only, honest even when it stings, flags risks and burnout, keeps secrets, never guilt or pressure.</span></span>
+          <span class="sub" style="white-space:nowrap">Built in</span>
+        </div>
+        <div class="srow">
+          <span>Feedback you've given<span class="sub" id="fbStats">—</span></span>
+          <span class="btn-row" style="margin:0">
+            <button type="button" class="btn" id="fbExport">Export</button>
+            <button type="button" class="btn danger" id="fbDelete">Clear</button>
+          </span>
+        </div>
+        <p class="status-msg" id="soulStatus"></p>
+      </section>
+      <section id="tab-backups" role="tabpanel" hidden>
+        <div class="srow">
+          <span>Daily snapshot<span class="sub">Memory, feedback, settings and configs. Models are never copied.</span></span>
+          <button type="button" class="toggle" id="setBackup" role="switch" aria-checked="true" aria-label="Daily snapshot"></button>
+        </div>
+        <div class="srow">
+          <span>Folder<span class="sub" id="bakDir">—</span></span>
+          <input type="text" id="setBackupDir" placeholder="Default (data\backups)" aria-label="Backup folder" />
+        </div>
+        <div class="srow">
+          <span>Keep<span class="sub">Newest snapshots to keep.</span></span>
+          <input type="text" id="setBackupKeep" inputmode="numeric" style="width:70px" aria-label="Snapshots to keep" />
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="bakNow">Back up now</button>
+          <button type="button" class="btn" id="bakRefresh">Refresh</button>
+        </div>
+        <p class="sub" id="bakLast" style="margin:0 0 8px;color:var(--label-2);font-size:12.5px"></p>
+        <div id="snapList"></div>
+        <p class="status-msg" id="bakStatus"></p>
+      </section>
+    </div>
+  </aside>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -1624,6 +2495,23 @@
     let generating = false;
     let abortCtrl = null;
     let chatEpoch = 0; // bumps on New chat / model switch so a late reply can't leak into a fresh history
+    let chatId = newChatId();
+    let temporary = false;   // this chat neither reads nor writes memory
+    let memorySettings = null;
+    function newChatId() {
+      return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    }
+    function chatHeaders() {
+      const h = { "X-HIVI-Chat": chatId };
+      const textOf = (m) => typeof m.content === "string" ? m.content
+        : (m.content.find((p) => p.type === "text") || {}).text || "";
+      // Title: the first real message, not a "remember / forget" command.
+      const first = messages.find((m) => m.role === "user"
+        && !/^(?:hivi[,!]?\s+)?(?:please\s+)?(?:remember|forget|note down|yaad rakh|bhool ja)/i.test(textOf(m)));
+      if (first) h["X-HIVI-Chat-Title"] = textOf(first).replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 80);
+      if (temporary) h["X-HIVI-Temporary"] = "1";
+      return h;
+    }
     let activeVision = false;
     let pendingImage = null; // { dataUrl, name }
     const attachBtn = $("attachBtn");
@@ -1644,12 +2532,17 @@
     const healthContent = $("healthContent");
     let healthOpen = false;
     let healthTimer = null;
-    let healthPanelTimer = null;
+    let healthInflight = false;
+    let healthOkAt = 0;          // when /api/health last answered
+    let healthAgeTimer = null;
     let statusTimer = null;
     let modelsTimer = null;
     let lastHealth = null;
 
     const ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 5.5v-.5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h.5"/></svg>';
+    const ICON_UP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 10.5v9H4.5a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1H7zm0 0 4-7.2a1.8 1.8 0 0 1 3.4 1.1L13.6 9h4.6a2 2 0 0 1 2 2.4l-1.3 6.6a2 2 0 0 1-2 1.5H7"/></svg>';
+    const ICON_DOWN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 13.5v-9h2.5a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H17zm0 0-4 7.2a1.8 1.8 0 0 1-3.4-1.1l.8-4.6H5.8a2 2 0 0 1-2-2.4l1.3-6.6a2 2 0 0 1 2-1.5H17"/></svg>';
+    const ICON_MEM = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4a4 4 0 0 0-4 4v1.2A3.5 3.5 0 0 0 6.5 16H8v4h8v-4h1.5a3.5 3.5 0 0 0-1.5-6.8V8a4 4 0 0 0-4-4z"/><path d="M12 8v4"/></svg>';
     const ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
     const ICON_SPARK = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.5c.5 4.6 2.9 7 7.5 7.5-4.6.5-7 2.9-7.5 7.5-.5-4.6-2.9-7-7.5-7.5 4.6-.5 7-2.9 7.5-7.5Z"/><path d="M19 15.5c.2 1.9 1.1 2.8 3 3-1.9.2-2.8 1.1-3 3-.2-1.9-1.1-2.8-3-3 1.9-.2 2.8-1.1 3-3Z"/></svg>';
     const THINKING = '<span class="thinking">Thinking</span>';
@@ -1681,12 +2574,14 @@
         : "— tok/s";
       const chipParts = [];
       if (gpu && gpu.vram_total_mib != null && gpu.vram_used_mib != null) {
-        chipParts.push(`${(gpu.vram_used_mib / 1024).toFixed(1)} / ${(gpu.vram_total_mib / 1024).toFixed(0)} GB`);
-        if (gpu.temp_c != null) chipParts.push(`${Math.round(gpu.temp_c)}°C`);
+        chipParts.push(["hc-vram", `${(gpu.vram_used_mib / 1024).toFixed(1)} / ${(gpu.vram_total_mib / 1024).toFixed(0)} GB`]);
+        if (gpu.temp_c != null) chipParts.push(["hc-temp", `${Math.round(gpu.temp_c)}°C`]);
       }
-      chipParts.push(speedText);
-      healthLabel.textContent = chipParts.join(" · ");
-      healthChip.title = warnings[0]?.text || "System health";
+      chipParts.push(["hc-speed", speedText]);
+      healthLabel.innerHTML = chipParts.map(([cls, text]) => `<span class="${cls}">${healthEsc(text)}</span>`).join("");
+      const chipText = chipParts.map(([, text]) => text).join(", ");
+      healthChip.title = warnings[0]?.text || `System health: ${chipText}`;
+      healthChip.setAttribute("aria-label", `System health: ${chipText}${warnings.length ? `. ${warnings[0].text}` : ""}`);
 
       const sections = [];
       if (warnings.length) {
@@ -1702,11 +2597,14 @@
         sections.push(healthSection("GPU",
           healthRow("Name", gpu.name) +
           healthRow("VRAM", `${healthMiB(gpu.vram_used_mib)} used · ${healthMiB(gpu.vram_free_mib)} free · ${healthMiB(gpu.vram_total_mib)} total`) +
+          healthRow("Load", gpu.util_pct == null ? "—" : `${gpu.util_pct.toFixed(0)}%${gpu.sm_mhz == null ? "" : ` · ${gpu.sm_mhz.toFixed(0)} MHz`}`) +
           healthRow("Temperature", gpu.temp_c == null ? "—" : `${gpu.temp_c.toFixed(0)} °C`) +
           healthRow("Power", gpu.power_w == null ? "—" : `${gpu.power_w.toFixed(1)} W / ${gpu.power_limit_w ?? "—"} W`) +
           healthRow("Throttle", throttle) +
           healthRow("Programs using VRAM", programs)
         ));
+      } else {
+        sections.push(healthSection("GPU", healthRow("Readings", "nvidia-smi is not answering")));
       }
       const system = data.system || {};
       sections.push(healthSection("System",
@@ -1739,22 +2637,65 @@
           healthRow("Model", speed.model || "—")
         ));
       }
+      const scroll = healthPanel.scrollTop;
       healthContent.innerHTML = sections.join("");
+      healthPanel.scrollTop = scroll;
+      updateHealthAge();
     }
+    // How old the numbers on screen are; dims the chip when they stop updating.
+    function updateHealthAge() {
+      if (!lastHealth) return;
+      const sinceAnswer = (Date.now() - healthOkAt) / 1000;
+      const gpuAge = lastHealth.gpu?.age_s ?? 0;
+      const age = Math.max(0, sinceAnswer + gpuAge);
+      const stale = sinceAnswer > 15 || Boolean(lastHealth.gpu?.stale);
+      healthChip.classList.toggle("stale", stale);
+      const ageEl = document.getElementById("healthAge");
+      if (ageEl) {
+        const noGpu = !lastHealth.gpu && sinceAnswer <= 15;
+        ageEl.textContent = noGpu ? "No GPU readings"
+          : stale ? `Not updating · ${Math.round(age)} s old`
+          : age < 3 ? "Live" : `Updated ${Math.round(age)} s ago`;
+        ageEl.classList.toggle("stale", stale || noGpu);
+      }
+    }
+    // One request at a time, on a self-rescheduling timer: a slow answer can't
+    // pile up requests or let an older reading overwrite a newer one.
+    const HEALTH_EVERY_MS = 3000;       // chip
+    const HEALTH_OPEN_EVERY_MS = 1500;  // panel open, or a reply is being generated
     async function refreshHealth() {
-      if (document.hidden) return;
+      if (document.hidden || healthInflight) return;
+      healthInflight = true;
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const r = await fetch("/api/health", { cache: "no-store" });
-        if (r.ok) renderHealth(await r.json());
-      } catch (_) { }
+        const r = await fetch("/api/health", { cache: "no-store", signal: ctrl.signal });
+        if (r.ok) {
+          const data = await r.json();
+          healthOkAt = Date.now();
+          renderHealth(data);
+        }
+      } catch (_) {
+      } finally {
+        clearTimeout(timeout);
+        healthInflight = false;
+        updateHealthAge();
+      }
+    }
+    function scheduleHealth() {
+      if (healthTimer) clearTimeout(healthTimer);
+      healthTimer = null;
+      if (document.hidden) return;
+      const every = healthOpen || generating ? HEALTH_OPEN_EVERY_MS : HEALTH_EVERY_MS;
+      healthTimer = setTimeout(async () => {
+        await refreshHealth();
+        scheduleHealth();
+      }, every);
     }
     function updateHealthPolling() {
-      if (healthTimer) clearInterval(healthTimer);
-      if (healthPanelTimer) clearInterval(healthPanelTimer);
-      healthTimer = healthPanelTimer = null;
-      if (document.hidden) return;
-      healthTimer = setInterval(refreshHealth, 10000);
-      if (healthOpen) healthPanelTimer = setInterval(refreshHealth, 3000);
+      scheduleHealth();
+      if (healthAgeTimer) clearInterval(healthAgeTimer);
+      healthAgeTimer = document.hidden ? null : setInterval(updateHealthAge, 1000);
     }
     function updateAllPolling() {
       if (statusTimer) clearInterval(statusTimer);
@@ -1764,6 +2705,7 @@
         updateHealthPolling();
         return;
       }
+      refreshHealth();
       statusTimer = setInterval(refreshStatus, 8000);
       modelsTimer = setInterval(() => loadModels().catch(() => { }), 15000);
       updateHealthPolling();
@@ -2011,9 +2953,25 @@
         parts: [`${tokens} tokens`, `${fmtMs(genMs)}`, `${fmtMs(ttftMs)} to first token`],
       };
     }
-    function addMeta(wrap, { tokens, genMs, ttftMs, serverTps, text, stopped }) {
+    function addMeta(wrap, { tokens, genMs, ttftMs, serverTps, text, stopped, prompt, chatId: cid }) {
       const { tps, tpsStr, parts } = formatSpeed(tokens, genMs, ttftMs, serverTps);
       const meta = el("div", "meta");
+      if (text && !temporary) {
+        const fb = el("span", "fb");
+        const mk = (rating, label, icon) => {
+          const b = el("button");
+          b.type = "button";
+          b.title = label;
+          b.setAttribute("aria-label", label);
+          b.innerHTML = icon;
+          b.addEventListener("click", () => sendFeedback(wrap, fb, b, rating, prompt, text, cid));
+          fb.appendChild(b);
+          return b;
+        };
+        mk(1, "Good reply", ICON_UP);
+        mk(-1, "Could be better", ICON_DOWN);
+        meta.appendChild(fb);
+      }
       if (text) {
         const copy = el("button");
         copy.type = "button";
@@ -2327,6 +3285,7 @@
           const detail = sentence(s.detail || s.status || "Idle");
           statusLine.textContent = detail;
           statusLine.title = detail;
+          statusLine.parentElement.title = detail;
         }
         statusLine.classList.toggle("err", s.status === "error");
         if (s.model_id && !userPickedModel) {
@@ -2470,6 +3429,7 @@
       const sameChat = () => epoch === chatEpoch;
 
       generating = true;
+      scheduleHealth();  // faster readings while the GPU is working
       abortCtrl = new AbortController();
       setBusy(true);
       composerWrap.classList.add("generating");
@@ -2523,6 +3483,8 @@
 
       let full = "";
       let reasoningFull = "";
+      let isCommand = false;
+      const sentAt = Date.now() / 1000;
       let usageTokens = null;
       let serverTps = null;
       const tRequest = performance.now();
@@ -2543,7 +3505,7 @@
       try {
         const r = await fetch("/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...chatHeaders() },
           body: JSON.stringify(payload),
           signal: abortCtrl.signal,
         });
@@ -2562,6 +3524,16 @@
         if (aMax) parts.push(`up to ${aMax} tokens`);
         const aThink = h("X-HIVI-HAIE-Thinking");
         if (aThink) parts.push(`thinking ${aThink}`);
+        const mood = h("X-HIVI-Mood");
+        if (mood) parts.push(`mood ${mood}`);
+        const recalled = h("X-HIVI-Recalled");
+        if (recalled) parts.push(`${recalled} ${recalled === "1" ? "memory" : "memories"} recalled`);
+        const memMode = h("X-HIVI-Memory");
+        isCommand = memMode === "command";
+        if (isCommand) {
+          const commandChat = chatId;
+          setTimeout(() => showMemoryChip(wrap, commandChat), 150);
+        }
         adaptiveHint.textContent = parts.length ? "HAIE: " + parts.join(", ") : DEFAULT_HINT;
 
         const reader = r.body.getReader();
@@ -2630,8 +3602,10 @@
         }
         if (retryWithThinking) return;
         const m = metrics();
-        addMeta(wrap, { ...m, text: failed ? null : visible });
+        addMeta(wrap, { ...m, text: failed ? null : visible, prompt: text, chatId });
         statusLine.textContent = formatSpeed(m.tokens, m.genMs, m.ttftMs, m.serverTps).label;
+        if (!failed && !isCommand && !temporary && memorySettings?.memory_enabled !== false) watchMemoryChip(wrap, chatId, sentAt);
+        if (sameChat()) saveChatSoon();
       } catch (e) {
         streamDone = true;
         if (paintTimer) clearTimeout(paintTimer);
@@ -2641,6 +3615,7 @@
             renderInto(body, partial, false);
             if (sameChat()) messages.push({ role: "assistant", content: partial });
             addMeta(wrap, { ...metrics(), text: partial, stopped: true });
+            if (sameChat()) saveChatSoon();
           } else {
             body.className = "md muted";
             body.textContent = "Stopped before an answer started.";
@@ -2662,6 +3637,537 @@
         if (retryWithThinking) setTimeout(() => sendMessage(text, { retry: true }), 0);
       }
     }
+
+    /* ───────── Chat history (MEM-4) ───────── */
+    const side = $("side");
+    const sideList = $("sideList");
+    let chats = [];
+    let saveTimer = null;
+    let loadedFromHistory = false;
+
+    function setSideOpen(open) {
+      document.body.classList.toggle("side-open", open);
+      $("sideBtn").setAttribute("aria-expanded", String(open));
+      try { localStorage.setItem("hivi.side", open ? "1" : "0"); } catch (_) { }
+      if (open) loadChats();
+    }
+    $("sideBtn").addEventListener("click", () => setSideOpen(!document.body.classList.contains("side-open")));
+    $("sideClose").addEventListener("click", () => setSideOpen(false));
+    $("sideScrim").addEventListener("click", () => setSideOpen(false));
+    $("sideNew").addEventListener("click", () => { clearBtn.click(); if (innerWidth <= 900) setSideOpen(false); });
+    document.addEventListener("keydown", (e) => {
+      if (e.ctrlKey && e.shiftKey && (e.key === "H" || e.key === "h")) { e.preventDefault(); $("sideBtn").click(); }
+    });
+
+    function groupOf(ts) {
+      const d = new Date(ts * 1000), now = new Date();
+      const day = 86400000;
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      if (d.getTime() >= start) return "Today";
+      if (d.getTime() >= start - day) return "Yesterday";
+      if (d.getTime() >= start - 7 * day) return "Previous 7 days";
+      if (d.getTime() >= start - 30 * day) return "Previous 30 days";
+      return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+    }
+    async function loadChats() {
+      const q = $("sideSearch").value.trim();
+      try {
+        const r = await fetch(`/api/chats?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const d = await r.json();
+        chats = d.chats;
+        $("sideCount").textContent = d.count ? `${d.count} ${d.count === 1 ? "chat" : "chats"} on this PC` : "";
+        $("sideCount").title = "data\\memory\\chats.db";
+        renderChats(q);
+      } catch (_) { }
+    }
+    function renderChats(q) {
+      sideList.innerHTML = "";
+      if (!chats.length) {
+        sideList.appendChild(el("li", "side-empty", q ? "No chats match." : "Your chats will show up here. They're saved on this PC after every reply."));
+        return;
+      }
+      let group = null;
+      for (const c of chats) {
+        const g = c.pinned ? "Pinned" : q ? "Results" : groupOf(c.updated_at);
+        if (g !== group) { group = g; sideList.appendChild(el("li", "side-group", g)); }
+        sideList.appendChild(chatRow(c));
+      }
+    }
+    const ICON_PIN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-.8 6.2 3.3 3.3V15H6.5v-1.5l3.3-3.3z"/><path d="M12 15v5.5"/></svg>';
+    function chatRow(c) {
+      const li = el("li", "chat-item" + (c.id === chatId ? " active" : ""));
+      li.tabIndex = 0;
+      li.dataset.id = c.id;
+      const t = el("span", "t");
+      t.appendChild(el("span", "", c.title));
+      if (c.snippet) t.appendChild(el("span", "snip", c.snippet));
+      li.appendChild(t);
+      if (c.pinned) { const p = el("span", "pin"); p.innerHTML = ICON_PIN; li.appendChild(p); }
+      const acts = el("span", "acts");
+      const mk = (label, icon, fn) => {
+        const b = el("button", "icon-btn"); b.type = "button"; b.title = label; b.setAttribute("aria-label", label);
+        b.innerHTML = icon; b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); acts.appendChild(b);
+      };
+      mk(c.pinned ? "Unpin" : "Pin", ICON_PIN, async () => {
+        await fetch(`/api/chats/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pinned: !c.pinned }) });
+        loadChats();
+      });
+      mk("Rename", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16z"/></svg>', () => renameChat(li, c));
+      mk("Delete", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14M10 11v6M14 11v6M6.5 7l.8 12a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9l.8-12M9 7V4.5h6V7"/></svg>', async () => {
+        if (!confirm(`Delete “${c.title}”?`)) return;
+        await fetch(`/api/chats/${c.id}`, { method: "DELETE" });
+        if (c.id === chatId) clearBtn.click();
+        loadChats();
+      });
+      li.appendChild(acts);
+      li.addEventListener("click", () => openChat(c.id));
+      li.addEventListener("keydown", (e) => { if (e.key === "Enter") openChat(c.id); });
+      return li;
+    }
+    function renameChat(li, c) {
+      const inp = el("input");
+      inp.value = c.title;
+      li.querySelector(".t").replaceWith(inp);
+      inp.focus(); inp.select();
+      const done = async (save) => {
+        const title = inp.value.trim();
+        if (save && title && title !== c.title) {
+          await fetch(`/api/chats/${c.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) });
+        }
+        loadChats();
+      };
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(true); if (e.key === "Escape") done(false); e.stopPropagation(); });
+      inp.addEventListener("blur", () => done(true));
+      inp.addEventListener("click", (e) => e.stopPropagation());
+    }
+    async function openChat(id) {
+      if (id === chatId) return;
+      if (generating) abortCtrl?.abort();
+      try {
+        const r = await fetch(`/api/chats/${id}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const c = await r.json();
+        if (temporary) setTemporary(false);
+        messages = c.messages;
+        chatEpoch++;
+        chatId = c.id;
+        loadedFromHistory = true;
+        thread.innerHTML = "";
+        hideRouteHint();
+        adaptiveHint.textContent = DEFAULT_HINT;
+        for (let i = 0; i < messages.length; i++) {
+          const m = messages[i];
+          if (m.role === "user") {
+            const text = typeof m.content === "string" ? m.content : (m.content.find((p) => p.type === "text") || {}).text || "";
+            const img = typeof m.content === "string" ? null : m.content.find((p) => p.type === "image_url");
+            addUser(text, img ? { dataUrl: img.image_url.url, name: "image" } : null);
+          } else {
+            const { wrap, body } = addAssistant();
+            renderInto(body, m.content, false);
+            const meta = el("div", "meta");
+            const copy = el("button"); copy.type = "button"; copy.innerHTML = ICON_COPY + "<span>Copy</span>";
+            copy.addEventListener("click", async () => { if (await copyText(m.content)) { copy.innerHTML = ICON_CHECK + "<span>Copied</span>"; setTimeout(() => (copy.innerHTML = ICON_COPY + "<span>Copy</span>"), 1600); } });
+            meta.appendChild(copy);
+            wrap.appendChild(meta);
+          }
+        }
+        updateEmpty();
+        scrollToBottom(false);
+        sideList.querySelectorAll(".chat-item").forEach((li) => li.classList.toggle("active", li.dataset.id === id));
+        if (innerWidth <= 900) setSideOpen(false);
+        input.focus();
+      } catch (_) { }
+    }
+    function saveChatSoon() {
+      if (temporary || !messages.some((m) => m.role === "assistant")) return;
+      clearTimeout(saveTimer);
+      const id = chatId, snapshot = messages.slice();
+      saveTimer = setTimeout(async () => {
+        try {
+          await fetch(`/api/chats/${id}`, {
+            method: "PUT", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messages: snapshot, model: activeModelId }),
+          });
+          if (document.body.classList.contains("side-open")) loadChats();
+        } catch (_) { }
+      }, 400);
+    }
+    let sideSearchTimer = null;
+    $("sideSearch").addEventListener("input", () => { clearTimeout(sideSearchTimer); sideSearchTimer = setTimeout(loadChats, 180); });
+    $("sideClear").addEventListener("click", async () => {
+      if (!confirm("Delete all saved chats? Memories are kept; this only clears the chat list.")) return;
+      await fetch("/api/chats/delete-all", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: "DELETE" }) });
+      loadChats();
+    });
+    try { if (localStorage.getItem("hivi.side") === "1" && innerWidth > 900) setSideOpen(true); } catch (_) { }
+
+    /* ───────── Memory chip, feedback, settings sheet ───────── */
+    const sheet = $("sheet");
+    const sheetScrim = $("sheetScrim");
+    const memList = $("memList");
+    const memStatus = $("memStatus");
+    const shownBatches = new Set();
+
+    async function showMemoryChip(wrap, cid, since = 0) {
+      try {
+        const r = await fetch(`/api/memory/events?chat=${encodeURIComponent(cid)}`, { cache: "no-store" });
+        if (!r.ok) return false;
+        const { event } = await r.json();
+        if (!event || shownBatches.has(event.batch) || event.at < since) return false;
+        shownBatches.add(event.batch);
+        renderMemoryChip(wrap, event);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    // The learning pass runs after the reply, when the GPU is idle: poll briefly for its result.
+    function watchMemoryChip(wrap, cid, since) {
+      let tries = 0;
+      const tick = async () => {
+        if (cid !== chatId && tries > 2) return;
+        if (await showMemoryChip(wrap, cid, since)) return;
+        if (++tries < 40) setTimeout(tick, tries < 8 ? 1500 : 4000);
+      };
+      setTimeout(tick, 2500);
+    }
+    function renderMemoryChip(wrap, event) {
+      const chip = el("div", "mem-chip");
+      chip.innerHTML = ICON_MEM;
+      const n = event.added.length + event.updated.length + event.removed.length;
+      const labelText = event.removed.length && !event.added.length && !event.updated.length
+        ? "Memory removed" : "Memory updated";
+      chip.appendChild(el("span", "", labelText));
+      const what = [...event.added.map((m) => m.text), ...event.updated.map((m) => m.text),
+        ...event.removed.map((m) => m.text)];
+      const w = el("span", "what", what.join(" · "));
+      w.title = what.join("\n");
+      chip.appendChild(w);
+      const undo = el("button", "", "Undo");
+      undo.addEventListener("click", async () => {
+        undo.disabled = true;
+        try {
+          const r = await fetch("/api/memory/undo", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ batch: event.batch }),
+          });
+          if (r.ok) {
+            chip.innerHTML = ICON_MEM;
+            chip.appendChild(el("span", "", n === 1 ? "Undone" : `Undone (${n})`));
+            if (!sheet.hidden) loadMemories();
+          }
+        } catch (_) { undo.disabled = false; }
+      });
+      chip.appendChild(undo);
+      const manage = el("button", "", "Manage");
+      manage.addEventListener("click", () => openSheet("memory"));
+      chip.appendChild(manage);
+      wrap.appendChild(chip);
+      if (nearBottom()) scrollToBottom(true);
+    }
+
+    async function sendFeedback(wrap, fb, btn, rating, prompt, reply, cid) {
+      if (btn.classList.contains("on")) return;
+      fb.querySelectorAll("button").forEach((b) => b.classList.remove("on"));
+      btn.classList.add("on");
+      wrap.querySelector(".fb-form")?.remove();
+      let better = "";
+      const post = async () => {
+        try {
+          await fetch("/api/feedback", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rating, prompt, reply, better, chat_id: cid }),
+          });
+        } catch (_) { }
+      };
+      if (rating > 0) { await post(); return; }
+      const box = el("div", "fb-form");
+      box.appendChild(el("span", "", "Say it like this instead (optional). HIVI learns your style from these."));
+      const ta = el("textarea");
+      ta.placeholder = "How you'd have wanted the reply to sound or what it should have said";
+      box.appendChild(ta);
+      const row = el("div", "row");
+      const skip = el("button", "btn", "Just thumbs down");
+      skip.type = "button";
+      const save = el("button", "btn primary", "Save");
+      save.type = "button";
+      skip.addEventListener("click", async () => { box.remove(); await post(); });
+      save.addEventListener("click", async () => { better = ta.value.trim(); box.remove(); await post(); });
+      row.append(skip, save);
+      box.appendChild(row);
+      wrap.appendChild(box);
+      ta.focus();
+      if (nearBottom()) scrollToBottom(true);
+    }
+
+    /* Temporary chat */
+    const tempBtn = $("tempBtn");
+    function setTemporary(on) {
+      temporary = on;
+      tempBtn.classList.toggle("on", on);
+      tempBtn.setAttribute("aria-pressed", String(on));
+      document.body.classList.toggle("temporary", on);
+      input.placeholder = on ? "Temporary chat · not remembered" : "Message HIVI";
+    }
+    tempBtn.addEventListener("click", () => {
+      if (!temporary && messages.length) {
+        addNote("Temporary mode starts a fresh chat: nothing from here on is remembered.");
+        clearBtn.click();
+      }
+      setTemporary(!temporary);
+    });
+
+    /* Settings sheet */
+    let sheetTab = "memory";
+    function openSheet(tab) {
+      if (tab) selectTab(tab);
+      sheet.hidden = false;
+      sheetScrim.hidden = false;
+      requestAnimationFrame(() => { sheet.classList.add("show"); sheetScrim.classList.add("show"); });
+      loadSettings();
+      if (sheetTab === "memory") loadMemories();
+      if (sheetTab === "backups") loadBackups();
+      sheet.querySelector(".tabs button[aria-selected=true]")?.focus();
+    }
+    function closeSheet() {
+      sheet.classList.remove("show");
+      sheetScrim.classList.remove("show");
+      setTimeout(() => { sheet.hidden = true; sheetScrim.hidden = true; }, 300);
+      input.focus();
+    }
+    function selectTab(tab) {
+      sheetTab = tab;
+      sheet.querySelectorAll(".tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+      ["memory", "soul", "backups"].forEach((t) => { $("tab-" + t).hidden = t !== tab; });
+      if (tab === "memory") loadMemories();
+      if (tab === "backups") loadBackups();
+    }
+    $("settingsBtn").addEventListener("click", () => openSheet());
+    $("sheetClose").addEventListener("click", closeSheet);
+    sheetScrim.addEventListener("click", closeSheet);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !sheet.hidden) closeSheet(); });
+    sheet.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
+
+    const SWITCHES = { setMemory: "memory_enabled", setAuto: "auto_memory", setPersonality: "personality",
+      setMood: "mood_enabled", setBackup: "backup_enabled" };
+    function applySettings(st) {
+      memorySettings = st;
+      for (const [id, key] of Object.entries(SWITCHES)) $(id).setAttribute("aria-checked", String(Boolean(st[key])));
+      if (document.activeElement !== $("setName")) $("setName").value = st.user_name || "";
+      if (document.activeElement !== $("setBackupDir")) $("setBackupDir").value = st.backup_dir || "";
+      if (document.activeElement !== $("setBackupKeep")) $("setBackupKeep").value = st.backup_keep ?? 14;
+      $("setAuto").disabled = !st.memory_enabled;
+    }
+    async function loadSettings() {
+      try {
+        const r = await fetch("/api/memory?q=", { cache: "no-store" });
+        if (!r.ok) return;
+        const d = await r.json();
+        applySettings(d.settings);
+        const f = d.feedback || {};
+        $("fbStats").textContent = f.total
+          ? `${f.up} up · ${f.down} down · ${f.rewrites} rewrites. Exported as JSONL for later training.`
+          : "None yet. Use the thumbs under a reply.";
+      } catch (_) { }
+    }
+    async function saveSettings(patch) {
+      try {
+        const r = await fetch("/api/memory/settings", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+        });
+        if (r.ok) applySettings((await r.json()).settings);
+      } catch (_) { }
+    }
+    for (const [id, key] of Object.entries(SWITCHES)) {
+      $(id).addEventListener("click", () => saveSettings({ [key]: $(id).getAttribute("aria-checked") !== "true" }));
+    }
+    $("setName").addEventListener("change", () => saveSettings({ user_name: $("setName").value.trim() }));
+    $("setBackupDir").addEventListener("change", () => saveSettings({ backup_dir: $("setBackupDir").value.trim() }).then(loadBackups));
+    $("setBackupKeep").addEventListener("change", () => saveSettings({ backup_keep: parseInt($("setBackupKeep").value, 10) || 14 }));
+
+    /* Memory list */
+    let memItems = [];
+    function setMemStatus(text, err) {
+      memStatus.textContent = text || "";
+      memStatus.classList.toggle("err", Boolean(err));
+    }
+    async function loadMemories() {
+      const q = $("memSearch").value.trim();
+      try {
+        const r = await fetch(`/api/memory?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d = await r.json();
+        memItems = d.memories;
+        applySettings(d.settings);
+        renderMemories(q);
+      } catch (e) {
+        setMemStatus("Couldn't load memories: " + e.message, true);
+      }
+    }
+    function fmtDate(ts) {
+      if (!ts) return "";
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    }
+    function renderMemories(q) {
+      memList.innerHTML = "";
+      if (!memItems.length) {
+        const e = el("li", "mem-empty", q ? "Nothing matches." :
+          "Nothing saved yet. Tell HIVI \"remember that …\" or just chat: durable facts about you are noted after replies.");
+        memList.appendChild(e);
+        setMemStatus("");
+        return;
+      }
+      for (const m of memItems) memList.appendChild(memoryRow(m));
+      setMemStatus(`${memItems.length} ${memItems.length === 1 ? "memory" : "memories"}`);
+    }
+    function memoryRow(m) {
+      const li = el("li", "mem-item");
+      li.dataset.id = m.id;
+      const text = el("span", "t", m.text);
+      const acts = el("span", "acts");
+      const edit = el("button", "icon-btn");
+      edit.type = "button"; edit.title = "Edit"; edit.setAttribute("aria-label", "Edit");
+      edit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L4 16z"/></svg>';
+      const del = el("button", "icon-btn");
+      del.type = "button"; del.title = "Delete"; del.setAttribute("aria-label", "Delete");
+      del.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14M10 11v6M14 11v6M6.5 7l.8 12a1 1 0 0 0 1 .9h7.4a1 1 0 0 0 1-.9l.8-12M9 7V4.5h6V7"/></svg>';
+      acts.append(edit, del);
+      const cat = el("span", "cat", `${m.category}${m.origin === "auto" ? " · learned" : m.origin === "import" ? " · imported" : ""}${m.source_title ? " · from “" + m.source_title + "”" : ""} · ${fmtDate(m.updated_at)}`);
+      li.append(text, acts, cat);
+      edit.addEventListener("click", () => editMemory(li, m));
+      del.addEventListener("click", async () => {
+        li.style.opacity = "0.4";
+        const r = await fetch(`/api/memory/${m.id}`, { method: "DELETE" });
+        if (r.ok) { memItems = memItems.filter((x) => x.id !== m.id); renderMemories($("memSearch").value.trim()); }
+        else li.style.opacity = "";
+      });
+      return li;
+    }
+    function editMemory(li, m) {
+      const ta = el("textarea");
+      ta.value = m.text;
+      li.querySelector(".t").replaceWith(ta);
+      ta.focus();
+      const finish = async (save) => {
+        if (save) {
+          const text = ta.value.trim();
+          if (text && text !== m.text) {
+            const r = await fetch(`/api/memory/${m.id}`, {
+              method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }),
+            });
+            if (r.ok) { const d = await r.json(); Object.assign(m, d.memory); }
+            else setMemStatus((await r.json()).detail || "Couldn't save", true);
+          }
+        }
+        li.replaceWith(memoryRow(m));
+      };
+      ta.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(true); }
+        if (e.key === "Escape") finish(false);
+      });
+      ta.addEventListener("blur", () => finish(true));
+    }
+    let searchTimer = null;
+    $("memSearch").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadMemories, 180); });
+    $("memAddBtn").addEventListener("click", async () => {
+      const text = prompt("One short sentence about you, e.g. “Prefers answers in Hinglish”.");
+      if (!text || !text.trim()) return;
+      const r = await fetch("/api/memory", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok) setMemStatus(d.detail || "Couldn't add", true);
+      else if (d.status === "duplicate") setMemStatus("Already there.");
+      await loadMemories();
+    });
+    $("memExportJson").addEventListener("click", () => { location.href = "/api/memory/export?format=json"; });
+    $("memExportMd").addEventListener("click", () => { location.href = "/api/memory/export?format=md"; });
+    $("memImportBtn").addEventListener("click", () => $("memImportFile").click());
+    $("memImportFile").addEventListener("change", async () => {
+      const f = $("memImportFile").files[0];
+      if (!f) return;
+      const r = await fetch("/api/memory/import", {
+        method: "POST", headers: { "Content-Type": "text/plain" }, body: await f.text(),
+      });
+      const d = await r.json();
+      if (!r.ok) setMemStatus(d.detail || "Import failed", true);
+      else setMemStatus(`Imported ${d.added} new${d.duplicate ? `, ${d.duplicate} already there` : ""}${d.sensitive ? `, ${d.sensitive} skipped (secrets)` : ""}.`);
+      $("memImportFile").value = "";
+      await loadMemories();
+    });
+    $("memDeleteAll").addEventListener("click", async () => {
+      if (!memItems.length && !$("memSearch").value) return;
+      if (!confirm("Delete every memory? This can't be undone. (Export first if you want a copy.)")) return;
+      await fetch("/api/memory/delete-all", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: "DELETE" }),
+      });
+      await loadMemories();
+    });
+    $("fbExport").addEventListener("click", () => { location.href = "/api/feedback/export"; });
+    $("fbDelete").addEventListener("click", async () => {
+      if (!confirm("Clear all feedback?")) return;
+      await fetch("/api/feedback", { method: "DELETE" });
+      loadSettings();
+    });
+
+    /* Backups */
+    function setBakStatus(text, err) {
+      $("bakStatus").textContent = text || "";
+      $("bakStatus").classList.toggle("err", Boolean(err));
+    }
+    async function loadBackups() {
+      try {
+        const r = await fetch("/api/backups", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d = await r.json();
+        $("bakDir").textContent = d.dir;
+        $("bakLast").textContent = d.last_at
+          ? `Last snapshot ${d.age_h < 1 ? "just now" : d.age_h < 48 ? `${Math.round(d.age_h)} h ago` : `${Math.round(d.age_h / 24)} days ago`} · ${d.count} kept`
+          : "No snapshot yet. The first one runs about a minute after HIVI starts.";
+        if (d.error) setBakStatus("Last automatic backup failed: " + d.error, true); else setBakStatus("");
+        const list = $("snapList");
+        list.innerHTML = "";
+        for (const sn of d.snapshots) {
+          const row = el("div", "snap-item");
+          const left = el("span");
+          left.appendChild(el("span", "", new Date(sn.at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })));
+          left.appendChild(el("span", "sub", ` · ${sn.reason}${sn.memories != null ? ` · ${sn.memories} memories` : ""} · ${sn.size_kb} KB`));
+          const restore = el("button", "btn", "Restore");
+          restore.type = "button";
+          restore.addEventListener("click", async () => {
+            if (!confirm(`Restore the snapshot from ${new Date(sn.at * 1000).toLocaleString()}? Current memory is saved as a snapshot first.`)) return;
+            restore.disabled = true;
+            const rr = await fetch("/api/backups/restore", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name: sn.name, confirm: "RESTORE" }),
+            });
+            const dd = await rr.json();
+            setBakStatus(rr.ok ? `Restored. ${dd.memories} memories back.` : (dd.detail || "Restore failed"), !rr.ok);
+            await loadBackups();
+            if (rr.ok) await loadMemories();
+          });
+          row.append(left, restore);
+          list.appendChild(row);
+        }
+      } catch (e) {
+        setBakStatus("Couldn't read backups: " + e.message, true);
+      }
+    }
+    $("bakRefresh").addEventListener("click", loadBackups);
+    $("bakNow").addEventListener("click", async () => {
+      $("bakNow").disabled = true;
+      try {
+        const r = await fetch("/api/backups", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        const d = await r.json();
+        setBakStatus(r.ok ? `Saved ${d.snapshot.name} (${d.snapshot.size_kb} KB).` : (d.detail || "Backup failed"), !r.ok);
+      } finally {
+        $("bakNow").disabled = false;
+        loadBackups();
+      }
+    });
+    loadSettings();
 
     /* ───────── Events ───────── */
     form.addEventListener("submit", (e) => {
@@ -2749,6 +4255,8 @@
       if (generating) abortCtrl?.abort();
       messages = [];
       chatEpoch++;
+      chatId = newChatId();
+      sideList.querySelectorAll(".chat-item.active").forEach((li) => li.classList.remove("active"));
       thread.innerHTML = "";
       hideRouteHint();
       adaptiveHint.textContent = DEFAULT_HINT;
