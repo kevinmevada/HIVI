@@ -489,7 +489,7 @@
       line-height: 1.45;
     }
 
-    .health-warnings li + li {
+    .health-warnings li+li {
       margin-top: 4px;
     }
 
@@ -502,7 +502,7 @@
       font-size: 12px;
     }
 
-    #healthLabel span + span::before {
+    #healthLabel span+span::before {
       content: " · ";
     }
 
@@ -521,6 +521,7 @@
     }
 
     @container status (max-width: 300px) {
+
       .health-chip .hc-temp,
       .health-chip .hc-speed {
         display: none;
@@ -1162,6 +1163,7 @@
     }
 
     @media (max-width: 900px) {
+
       body.side-open header,
       body.side-open #chat,
       body.side-open .dock {
@@ -1268,7 +1270,7 @@
       padding: 14px 18px 24px;
     }
 
-    .sheet-body > section[hidden] {
+    .sheet-body>section[hidden] {
       display: none;
     }
 
@@ -2206,14 +2208,17 @@
 <body class="is-empty">
   <header>
     <div class="brand" title="HIVI">
-      <button id="sideBtn" class="icon-btn" type="button" title="Chat history (Ctrl+Shift+H)" aria-label="Chat history" aria-expanded="false">
+      <button id="sideBtn" class="icon-btn" type="button" title="Chat history (Ctrl+Shift+H)" aria-label="Chat history"
+        aria-expanded="false">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
           stroke-linejoin="round" aria-hidden="true">
           <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
           <path d="M9.5 4.5v15" />
         </svg>
       </button>
-      <img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark" data-text="HIVI">HIVI</span></div>
+      <img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark"
+        data-text="HIVI">HIVI</span>
+    </div>
 
     <div class="picker">
       <div class="select-wrap">
@@ -2234,8 +2239,8 @@
       </div>
       <span id="engineBadge" class="engine"></span>
       <div class="health-wrap">
-        <button id="healthChip" class="health-chip" type="button" aria-expanded="false"
-          aria-controls="healthPanel" title="System health">
+        <button id="healthChip" class="health-chip" type="button" aria-expanded="false" aria-controls="healthPanel"
+          title="System health">
           <span class="health-dot" aria-hidden="true"></span>
           <span id="healthLabel">— tok/s</span>
         </button>
@@ -2254,11 +2259,13 @@
           <path d="M6.6 6.8a7.5 7.5 0 1 0 10.8 0" />
         </svg>
       </button>
-      <button id="settingsBtn" class="icon-btn" type="button" title="Memory & settings" aria-label="Memory and settings">
+      <button id="settingsBtn" class="icon-btn" type="button" title="Memory & settings"
+        aria-label="Memory and settings">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
           stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3.2" />
-          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          <path
+            d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
         </svg>
       </button>
       <button id="clearBtn" class="icon-btn" type="button" title="New chat" aria-label="New chat">
@@ -2310,36 +2317,37 @@
 
           <div class="composer-row">
             <div class="composer-tools">
-            <button class="icon-btn" id="attachBtn" type="button"
-              title="Add an image (needs a model with a vision projector)" aria-label="Add image" disabled>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                stroke-linejoin="round" aria-hidden="true">
-                <rect x="3.5" y="5" width="17" height="14" rx="3" />
-                <circle cx="9" cy="10" r="1.6" />
-                <path d="m4 17 4.6-4.4a1.5 1.5 0 0 1 2 0L15 17" />
-                <path d="m13.5 15 1.9-1.8a1.5 1.5 0 0 1 2 0l3 2.8" />
-              </svg>
-            </button>
+              <button class="icon-btn" id="attachBtn" type="button"
+                title="Add an image (needs a model with a vision projector)" aria-label="Add image" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                  stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3.5" y="5" width="17" height="14" rx="3" />
+                  <circle cx="9" cy="10" r="1.6" />
+                  <path d="m4 17 4.6-4.4a1.5 1.5 0 0 1 2 0L15 17" />
+                  <path d="m13.5 15 1.9-1.8a1.5 1.5 0 0 1 2 0l3 2.8" />
+                </svg>
+              </button>
             </div>
             <div class="composer-tools">
-            <button class="icon-btn" id="tempBtn" type="button" aria-pressed="false"
-              title="Temporary chat: HIVI won't use or save memory in this chat" aria-label="Temporary chat">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-                stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5c0 2.2-.8 4.1-2.2 5.6L20 20.5h-8A8.5 8.5 0 0 1 12 3.5z" stroke-dasharray="2.6 2.6" />
-                <path d="M9 12h6" />
-              </svg>
-            </button>
-            <button class="send" id="send" type="submit" aria-label="Send" title="Send (Enter)" disabled>
-              <svg class="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
-                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 19V5.5" />
-                <path d="m5.5 11.5 6.5-6.5 6.5 6.5" />
-              </svg>
-              <svg class="i-stop" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <rect x="7" y="7" width="10" height="10" rx="2" />
-              </svg>
-            </button>
+              <button class="icon-btn" id="tempBtn" type="button" aria-pressed="false"
+                title="Temporary chat: HIVI won't use or save memory in this chat" aria-label="Temporary chat">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                  stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5c0 2.2-.8 4.1-2.2 5.6L20 20.5h-8A8.5 8.5 0 0 1 12 3.5z"
+                    stroke-dasharray="2.6 2.6" />
+                  <path d="M9 12h6" />
+                </svg>
+              </button>
+              <button class="send" id="send" type="submit" aria-label="Send" title="Send (Enter)" disabled>
+                <svg class="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+                  stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 19V5.5" />
+                  <path d="m5.5 11.5 6.5-6.5 6.5 6.5" />
+                </svg>
+                <svg class="i-stop" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <rect x="7" y="7" width="10" height="10" rx="2" />
+                </svg>
+              </button>
             </div>
           </div>
         </div>
@@ -2353,7 +2361,8 @@
   <div class="side-scrim" id="sideScrim"></div>
   <nav class="side" id="side" aria-label="Chat history">
     <div class="side-head">
-      <span class="brand"><img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark" data-text="HIVI">HIVI</span></span>
+      <span class="brand"><img class="brand-bunny" src="/static/brand/bunny.png" alt="" /><span class="wordmark"
+          data-text="HIVI">HIVI</span></span>
       <button class="icon-btn" id="sideClose" type="button" title="Hide history" aria-label="Hide history">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
           stroke-linejoin="round" aria-hidden="true">
@@ -2396,12 +2405,16 @@
     <div class="sheet-body">
       <section id="tab-memory" role="tabpanel">
         <div class="srow">
-          <span>Memory<span class="sub">HIVI remembers facts about you across chats. Everything stays in <code>data/memory</code> on this PC.</span></span>
-          <button type="button" class="toggle" id="setMemory" role="switch" aria-checked="true" aria-label="Memory"></button>
+          <span>Memory<span class="sub">HIVI remembers facts about you across chats. Everything stays in
+              <code>data/memory</code> on this PC.</span></span>
+          <button type="button" class="toggle" id="setMemory" role="switch" aria-checked="true"
+            aria-label="Memory"></button>
         </div>
         <div class="srow">
-          <span>Learn from chats<span class="sub">After a reply, while the GPU is idle, HIVI notes durable facts you said. Passwords, cards, IDs and keys are never kept.</span></span>
-          <button type="button" class="toggle" id="setAuto" role="switch" aria-checked="true" aria-label="Learn from chats"></button>
+          <span>Learn from chats<span class="sub">After a reply, while the GPU is idle, HIVI notes durable facts you
+              said. Passwords, cards, IDs and keys are never kept.</span></span>
+          <button type="button" class="toggle" id="setAuto" role="switch" aria-checked="true"
+            aria-label="Learn from chats"></button>
         </div>
         <div class="btn-row">
           <button type="button" class="btn" id="memAddBtn">Add a memory</button>
@@ -2409,9 +2422,11 @@
           <button type="button" class="btn" id="memExportMd">Export Markdown</button>
           <button type="button" class="btn" id="memImportBtn">Import</button>
           <button type="button" class="btn danger" id="memDeleteAll">Delete all</button>
-          <input type="file" id="memImportFile" accept=".json,.md,.txt,application/json,text/markdown,text/plain" hidden />
+          <input type="file" id="memImportFile" accept=".json,.md,.txt,application/json,text/markdown,text/plain"
+            hidden />
         </div>
-        <input type="search" class="mem-search" id="memSearch" placeholder="Search memories" aria-label="Search memories" />
+        <input type="search" class="mem-search" id="memSearch" placeholder="Search memories"
+          aria-label="Search memories" />
         <ul class="mem-list" id="memList"></ul>
         <p class="status-msg" id="memStatus"></p>
       </section>
@@ -2422,14 +2437,18 @@
         </div>
         <div class="srow">
           <span>Personality<span class="sub">Composed, warm, a little dry wit. Off gives plain answers.</span></span>
-          <button type="button" class="toggle" id="setPersonality" role="switch" aria-checked="true" aria-label="Personality"></button>
+          <button type="button" class="toggle" id="setPersonality" role="switch" aria-checked="true"
+            aria-label="Personality"></button>
         </div>
         <div class="srow">
-          <span>Mood awareness<span class="sub">A quick read of each message (stressed, excited, tired…) shapes how she answers, not what is true. Read in the moment, never stored.</span></span>
-          <button type="button" class="toggle" id="setMood" role="switch" aria-checked="true" aria-label="Mood awareness"></button>
+          <span>Mood awareness<span class="sub">A quick read of each message (stressed, excited, tired…) shapes how she
+              answers, not what is true. Read in the moment, never stored.</span></span>
+          <button type="button" class="toggle" id="setMood" role="switch" aria-checked="true"
+            aria-label="Mood awareness"></button>
         </div>
         <div class="srow">
-          <span>Loyalty<span class="sub">Always on: works for you only, honest even when it stings, flags risks and burnout, keeps secrets, never guilt or pressure.</span></span>
+          <span>Loyalty<span class="sub">Always on: works for you only, honest even when it stings, flags risks and
+              burnout, keeps secrets, never guilt or pressure.</span></span>
           <span class="sub" style="white-space:nowrap">Built in</span>
         </div>
         <div class="srow">
@@ -2443,8 +2462,10 @@
       </section>
       <section id="tab-backups" role="tabpanel" hidden>
         <div class="srow">
-          <span>Daily snapshot<span class="sub">Memory, feedback, settings and configs. Models are never copied.</span></span>
-          <button type="button" class="toggle" id="setBackup" role="switch" aria-checked="true" aria-label="Daily snapshot"></button>
+          <span>Daily snapshot<span class="sub">Memory, feedback, settings and configs. Models are never
+              copied.</span></span>
+          <button type="button" class="toggle" id="setBackup" role="switch" aria-checked="true"
+            aria-label="Daily snapshot"></button>
         </div>
         <div class="srow">
           <span>Folder<span class="sub" id="bakDir">—</span></span>
@@ -2585,9 +2606,8 @@
 
       const sections = [];
       if (warnings.length) {
-        sections.push(healthSection("Warnings", `<ul class="health-warnings">${
-          warnings.map((w) => `<li class="${w.level === "red" ? "red" : ""}">${healthEsc(w.text)}</li>`).join("")
-        }</ul>`));
+        sections.push(healthSection("Warnings", `<ul class="health-warnings">${warnings.map((w) => `<li class="${w.level === "red" ? "red" : ""}">${healthEsc(w.text)}</li>`).join("")
+          }</ul>`));
       }
       if (gpu) {
         const programs = (gpu.processes || []).map((p) =>
@@ -2655,7 +2675,7 @@
         const noGpu = !lastHealth.gpu && sinceAnswer <= 15;
         ageEl.textContent = noGpu ? "No GPU readings"
           : stale ? `Not updating · ${Math.round(age)} s old`
-          : age < 3 ? "Live" : `Updated ${Math.round(age)} s ago`;
+            : age < 3 ? "Live" : `Updated ${Math.round(age)} s ago`;
         ageEl.classList.toggle("stale", stale || noGpu);
       }
     }
@@ -3840,7 +3860,7 @@
         ? "Memory removed" : "Memory updated";
       chip.appendChild(el("span", "", labelText));
       const what = [...event.added.map((m) => m.text), ...event.updated.map((m) => m.text),
-        ...event.removed.map((m) => m.text)];
+      ...event.removed.map((m) => m.text)];
       const w = el("span", "what", what.join(" · "));
       w.title = what.join("\n");
       chip.appendChild(w);
@@ -3949,8 +3969,10 @@
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !sheet.hidden) closeSheet(); });
     sheet.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => selectTab(b.dataset.tab)));
 
-    const SWITCHES = { setMemory: "memory_enabled", setAuto: "auto_memory", setPersonality: "personality",
-      setMood: "mood_enabled", setBackup: "backup_enabled" };
+    const SWITCHES = {
+      setMemory: "memory_enabled", setAuto: "auto_memory", setPersonality: "personality",
+      setMood: "mood_enabled", setBackup: "backup_enabled"
+    };
     function applySettings(st) {
       memorySettings = st;
       for (const [id, key] of Object.entries(SWITCHES)) $(id).setAttribute("aria-checked", String(Boolean(st[key])));
