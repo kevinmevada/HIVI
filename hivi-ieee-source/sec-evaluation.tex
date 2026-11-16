@@ -1,0 +1,51 @@
+\section{Evaluation Plan and Early Measurements}
+\label{sec:evaluation}
+
+A vision paper owes its readers a statement of how its claims will be tested. \hivi{}'s evaluation has an unusual property that follows from its premise: because the system runs on one person's hardware for one person's tasks, the relevant benchmark is \emph{local}. The exams of \sect{sec:autonomy} are therefore both a feature and the paper's methodology.
+
+\subsection{Local exams as the unit of evidence}
+
+Each role and feature has an exam: a fixed set of tasks with automatic scoring, run on the owner's machine (Table~\ref{tab:exams}). The exams serve three purposes. They gate every change (P7): no model, skill, workflow or self-written patch is applied unless it wins. They are the benchmark for the agent company (\sect{sec:ide}): a suite of about thirty coding tasks across the depth tiers with hidden acceptance tests, measured on first-run pass rate, escalations to the user, retries per level and wall-clock time, with each build phase required to beat the previous one. And they make the hardware-awareness claims testable: after any hardware, driver or engine change the speed exam is re-run and the before/after numbers are recorded in the hardware timeline.
+
+Public leaderboards are used only to shortlist candidates for the scout; they do not decide anything, because they do not know the user's hardware, quantisation, context budget or tasks.
+
+\subsection{Measurements the prototype already reports}
+
+The prototype measures and stores, for every reply, time to first token and generation tokens per second, server-reported where the engine provides timings and estimated otherwise, per model and engine; model switch timings broken down into wait, stop and load; and GPU readings sampled live. Table~\ref{tab:early} gives representative figures from the target machine during development. They are reported to characterise the regime the design targets, not as a comparative evaluation: the development laptop ran a Qwen3-class 35B-A3B MoE at Q5 quantisation on an 8~GB GPU with CPU offload of experts, and project-memory retains through Hindsight.
+
+\begin{table}[t]
+\caption{Representative measurements on the target machine (RTX~5060 laptop GPU, 8~GB VRAM, 32~GB RAM). Characterisation of the regime, not a comparative benchmark.}
+\label{tab:early}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}YL{30mm}@{}}
+\toprule
+Quantity & Value \\
+\midrule
+Project-memory retain (Hindsight, LLM extraction), short document & $\sim$90--110~s (109~s measured) \\
+Cold switch to a $\sim$20~GB MoE model & tens of seconds (20--30~s class) \\
+Resident RAM, 35B-A3B chat model plus both CPU side services & $\sim$25~GB before context caches \\
+Side-service footprint (embedding, reranker, CPU) & $\sim$2.3~GB each \\
+HAIE rule-based classification & negligible (no model call) \\
+Health probe cadence & fast every 1.5~s; slow cached 60~s; never on the reply path \\
+Personal-memory extraction & one small model call after the reply, cancelled by the next message \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two of these numbers are the direct cause of design decisions. The 109~s retain is why personal memory has its own store and why automatic extraction is a short, schema-checked pass rather than a Hindsight retain. The tens-of-seconds model switch is why the agent company batches work by model and why router mode keeps a fast model resident.
+
+\subsection{Planned experiments}
+
+For each stage the following measurements are planned, with the prototype's test suites extended accordingly.
+\begin{itemize}
+\item \textbf{Memory (stage 2).} Precision of automatic extraction (fraction of saved facts the user keeps after a week, measured by undo and delete rates); recall quality (fraction of messages where recalled memories were used in the reply, judged by rubric); reply latency with memory on versus off, which the design predicts to be unchanged apart from a few hundred tokens of prompt.
+\item \textbf{Mood (stage 2).} Agreement of the rule-based reader with user self-report on a held-out set of messages in English and Hinglish; later, the same for a small learned classifier.
+\item \textbf{Search and files (stage 3).} Answer correctness and citation support on a question set with known answers; the fraction of cited sentences the citation check confirms; end-to-end time for quick search (target 5--10~s before generation).
+\item \textbf{Agent company (stage 6).} The thirty-task suite as above; the effect of slot count on throughput and per-worker latency; retries per level over time once \phase{IDE-6} learning is in place.
+\item \textbf{Self-improvement (stage 8).} Number of scout candidates examined, fraction accepted, fraction rolled back; exam score before and after each accepted switch.
+\item \textbf{Security.} A red-team set of prompt-injection attempts through web pages, files and tool results, scored on whether any send, delete or spend action was taken without approval (the design's target is zero).
+\end{itemize}
+
+\subsection{Engineering tests}
+
+The prototype carries automated tests for the chat server, HAIE, routers, health probes, personal memory, mood, backups and the desktop launcher (over 140 at the time of writing), plus a browser-driven check of the UI across window widths and themes. The QA plan (\sect{sec:operations}) extends these to end-to-end UI tests on a self-hosted GPU runner.

@@ -1,0 +1,112 @@
+\section{Autonomy: Always-On Operation, Night Shift, Self-Improvement, Desktop Control and Calls}
+\label{sec:autonomy}
+
+The features in this section move \hivi{} from a tool the user operates to an agent that works while the user is away. Each is a client of the security base (\sect{sec:security}); together they are the reason that base is built early.
+
+\subsection{Always-on \hivi{} and phone control}
+
+The goal: from the user's phone, anywhere, ``\hivi{}, until I reach home make me $X$, $Y$ and $Z$''---the work happens in the background and is done on arrival; routines run on their own; the assistant messages the user when something needs them.
+
+\paragraph{What is physically possible} A shut-down laptop runs nothing; everything else is possible (Table~\ref{tab:laptop}). The practical set-up is a laptop kept plugged in and set to sleep rather than shut down, with wake-on-network enabled; \hivi{} keeps it awake only while jobs run.
+
+\begin{table}[t]
+\caption{What \hivi{} can do in each laptop state}
+\label{tab:laptop}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{30mm}Y@{}}
+\toprule
+State & Capability \\
+\midrule
+On (lid closed is fine, plugged in) & Everything: tasks, routines, messages \\
+Asleep & The phone can wake it (Wake-on-LAN; Ethernet best, Wi-Fi depends on the laptop), then it works \\
+Shut down & Nothing runs; tasks queue and start the moment it boots \\
+Optional later: small always-on box & Holds the queue and wakes the laptop; can run tiny models for quick answers; heavy work waits for the laptop \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Phone control} A private connection through Tailscale (a WireGuard~\cite{wireguard} overlay between phone and laptop) so \hivi{} is reachable from anywhere without opening a port to the internet; the web UI as an installable phone app (PWA) with the same chats, memory and models, by text or voice; optionally a Telegram bot linked to the user's account alone; push notifications (``Done: 3 files ready'', ``Needs your OK'', ``Failed: here's why''); and login with device approval (\phase{SEC-3}), because anyone reaching \hivi{} could run code on the laptop.
+
+\paragraph{Background jobs} A SQLite job queue: every task from the phone becomes a job with status (queued, running, needs approval, done, failed), progress and results. Jobs survive a closed browser, lost signal, a crash (resuming from the last checkpoint) and a reboot (\hivi{} starts with the OS as a background service). The runner keeps the laptop awake only while a job runs, uses the same engines as chat (search, agents, image and voice generation), and lands results on the job's page on the phone.
+
+\paragraph{``Almost alive'': routines and watchers} Scheduled routines (``every morning at 8, summarise new data-science job postings''; ``every Sunday, back up my memories''); watchers that check a page, folder or repository on a schedule and act or notify on change; proactive messages only when something matters---a job finished, a watcher fired, an approval is needed---never spam.
+
+\paragraph{Safety} Remote control is power over the laptop, so the phone-side view of the shared gate applies: reading, searching, writing inside the workspace, generating images and voice, and running sandboxed code proceed without asking; deleting or overwriting files outside the workspace, sending or posting anything, and spending, installing or changing system settings need approval on the phone. A kill switch on the phone stops all jobs instantly; the activity log shows everything done while the user was away; per-job budgets (time, model calls) ensure nothing runs forever.
+
+\paragraph{Phases} \phase{LIVE-1}: job queue and background runner, starts with the OS, keep-awake, job status page. \phase{LIVE-2}: phone access (Tailscale, PWA, push). \phase{LIVE-3}: approvals from the phone, kill switch, activity-log viewer. \phase{LIVE-4}: routines and watchers. \phase{LIVE-5}: Telegram bot, voice from the phone. \phase{LIVE-6}: wake from sleep, optional always-on box.
+
+\subsection{Night shift}
+
+While the user sleeps, \hivi{} does the maintenance and heavy work that would slow it down during the day, then leaves a short morning report with anything needing a decision. It runs in a window the user sets (for example 2--6~a.m.), only when plugged in and with normal GPU temperature; the user always wins---starting to use the PC or messaging from the phone pauses night work instantly. The night's job list, in priority order: backup snapshot; health check (disk space, log clean-up, engine self-test); memory tidy (merge duplicates, flag outdated facts for review---never deleting on its own); re-index changed files and rebuild embeddings after an embedding-model change; regression exams on the current models; the model scout (candidates downloaded and examined); every skill's tests, flagging broken ones; research prep (pre-searching topics from tomorrow's open tasks and watched subjects so morning answers are instant); and long jobs the user queued (overnight experiments, agent runs, image batches). Limits: a time, energy and disk budget per night, with checkpoints so a job continues the next night; anything that sends, spends or changes files outside the workspace is not done at night and waits in the morning report. The report is one card in the app and a phone notification: what ran, what failed, backup status, and the decisions waiting (``switch to this model?'', ``merge these 3 memories?'', ``keep this new skill?''), each with one-tap buttons.
+
+\paragraph{Phases} \phase{NIGHT-1}: window, plug-in and temperature checks, pause when active; backups, health checks, re-index; morning report. \phase{NIGHT-2}: memory tidy suggestions, exams and scout, skill tests, research prep, queued long jobs.
+
+\subsection{Self-improvement: models, skills, workflows and blueprints}
+
+Once a day \hivi{} checks whether something better exists---a new model, a better way to do a skill, a better workflow---tests it on the user's own machine, and asks: ``I found $X$; it scored better than what I use now on these tests. Want me to switch?''
+
+\paragraph{The core rule} Nothing changes unless it wins on \hivi{}'s own exams (P7). Public leaderboards do not know the user's hardware, tasks or settings, so every role and department has a \emph{local exam}: a fixed set of tasks with automatic scoring, and a candidate replaces the incumbent only if it scores better here at a speed the user accepts. Table~\ref{tab:exams} lists the exams; \sect{sec:evaluation} returns to them as the paper's evaluation methodology.
+
+\begin{table}[t]
+\caption{Local exams}
+\label{tab:exams}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{19mm}YL{24mm}@{}}
+\toprule
+Exam & What it tests & Scored by \\
+\midrule
+Coding & Fix / implement tasks with hidden tests (the agent-company benchmark suite) & Tests pass \\
+Planning / reviewing & Plans and reviews checked against known answers & Rubric + code checks \\
+Chat and personality & Fixed conversations; tone and honesty rules (\sect{sec:soul}) & Rubric + the user's past thumbs \\
+Search answers & Questions with known answers and sources & Correct facts, correct citations \\
+Uncensored builds & The user's refusal test set; drift vs.\ the base model & Refusal count; quality kept \\
+Images / voice & Fixed prompts; speed and VRAM & The user's side-by-side picks + speed \\
+Speed & Tokens/s, time to first token, RAM and VRAM on this PC & Measured \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Daily model scout} (1) Scan, as a scheduled routine: new and trending models on Hugging Face, release notes of model families in use, engine updates. (2) Filter to what fits: 32~GB RAM and 8~GB VRAM; MoE with at most about 8B active parameters; no quantisation worse than Q5 for MoE; an acceptable licence; known uploaders; GGUF or safetensors only (no pickle files); uncensored builds only with a measured refusal and divergence report. (3) Shortlist one to three candidates per role from published results. (4) Download overnight within a disk budget and run the exams on idle time. (5) Report: ``Candidate vs.\ current: +12\% coding tests passed, same speed, 3~GB bigger'', with Switch / Try for a week / Skip buttons in the app or on the phone. (6) Switch safely: the old model stays installed; automatic rollback if the new one fails exams again or the user says ``go back''; unused old models are offered for deletion, never deleted silently.
+
+\paragraph{Skills, workflows and blueprints} Skills improve the same way: weekly re-checks of the sources behind each skill; a new version is built beside the old one and must pass the skill's tests and beat it on quality or speed; failures in real use trigger a revision first. Workflows---how \hivi{} does multi-step work: agent pipelines, the search loop, HAIE's sampling rules, prompt templates, retry budgets, the number of worker slots---improve the same way: \hivi{} proposes variants (a different prompt for the test author, four worker slots instead of three, one more search round), runs them on the exams in the background, proposes a winner with evidence, and records why in the decision log. A guardrail: variants may change prompts, settings and model assignments, never the safety rules, approval rules or exam answers.
+
+\paragraph{The user approves every upgrade} Default: ask before every switch. Optional: auto-apply small wins (settings, prompts) and ask only for model and skill swaps. A weekly ``what got better'' summary with exam scores before and after and what was rolled back. One switch pauses all self-improvement.
+
+\paragraph{\hivi{} improves \hivi{}} The assistant points its own agent company at its own repository: it fixes bugs from its error log, speeds up slow parts and adds small features the user asks for---always on a separate copy, always gated by tests, always with approval. Ideas come from repeated errors in the error log and slowdowns in the speed history (\sect{sec:operations}), failed exams, patterns in thumbs-down feedback, and direct requests. The loop: an issue with evidence (log lines, timings) and a proposed fix; work on a separate branch in a separate folder (a git worktree), never on the running \hivi{}; gates---the full test suite, the exams, and a new test that proves the fix; the user's review of summary, diff and test results; apply safely---snapshot, apply, restart, health check; automatic rollback if the health check or exams fail, or on request within 24 hours. A \emph{protected zone} the assistant may propose changes to but never make: the security base (login, approvals, vault, sandbox, activity log), so it cannot loosen its own limits; exam answers and existing tests, which it may add to but never delete or weaken (the gate checks); and the self-improvement rules and the rollback and backup code themselves, so a bad change can always be undone. Limits: one change at a time, small changes only (a set number of files and lines), a few per week; anything bigger becomes a plan for the user to approve first.
+
+\paragraph{Phases} \phase{UP-1}: local exam suites per role and a scoreboard. \phase{UP-2}: daily scout (scan, filter, shortlist, report). \phase{UP-3}: overnight download and exam runs, Switch / Try / Skip, rollback. \phase{UP-4}: skill self-improvement. \phase{UP-5}: workflow and blueprint variants on exams. \phase{UP-6}: engine update checks with regression tests. \phase{SELF-1}: self-coding, read-only (issues with evidence and proposed patches the user applies). \phase{SELF-2}: applies approved fixes under branch, gates, protected zone, backup, rollback. \phase{SELF-3}: small features from requests; optional auto-apply for tiny fixes that pass every gate, with notification.
+
+\subsection{Desktop control}
+
+\hivi{} uses desktop applications the way the user does---a spreadsheet, the file manager, settings, any app---to finish tasks that have no connector or API. The most reliable method is used first: a direct way (connector, shell, application automation, a file library) whenever one exists; the accessibility tree (buttons, menus and fields by name, e.g.\ via pywinauto) for most apps, which is text rather than pixels and works well with small models; and screenshots with the vision model for apps that do not expose their controls, which works almost anywhere but is slower and less reliable.
+
+This is the strictest feature in \hivi{}. Off by default and enabled per task. An app allow-list, never including password managers, banking, security settings or \hivi{}'s own security settings. Watch mode first: every step shown live and needing approval; later only risky steps ask. Stop instantly with a key on the PC and the kill switch on the phone. Screen content is untrusted (P6). It never fights the user for the mouse: it works only when invited or when the user is away, and later in a separate virtual machine so it never touches the user's session. Screenshots stay in the run log only and are deleted after a few days. A procedure that worked is saved as a skill, so next time is faster and more reliable; once \phase{DESK-3} is in place, phone jobs can include ``while I'm out, do $X$ in that app''.
+
+\paragraph{Phases} \phase{DESK-1}: read-only---look at an app (tree plus screenshot) and guide the user step by step. \phase{DESK-2}: actions in allowed apps with approval per step, live view, stop key. \phase{DESK-3}: longer unattended tasks from the phone in a separate virtual machine; procedures saved as skills.
+
+\subsection{Phone calls}
+
+The final stage: \hivi{} calls the user when something urgent comes up, and the user can call \hivi{} and just talk. It builds on voice mode (\sect{sec:capabilities}) and phone control. Three ways to make the call (Table~\ref{tab:calls}); the app call is built first because it is fully private and free and works anywhere with data.
+
+\begin{table}[t]
+\caption{Three ways to place a call}
+\label{tab:calls}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{17mm}YL{22mm}@{}}
+\toprule
+Way & How it rings & Privacy / cost \\
+\midrule
+App call (first) & The phone app rings through a high-priority push; audio phone $\leftrightarrow$ laptop over Tailscale (WebRTC) & Fully private, free \\
+Private phone line & A SIP app on the phone registered to a small phone server on the laptop (Asterisk / FreeSWITCH) over Tailscale & Private, free; rings like a real call even with the app closed \\
+Real phone number & A telephony provider gives \hivi{} a number; call audio streams to the laptop & Not local: the provider carries the audio; number fee plus per-minute cost \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{\hivi{} calls the user, urgent only} What counts as urgent is set by the user as rules: a job failed that blocks something due today, an approval needed before a deadline, a watcher marked ``call me''. An escalation ladder: notification first, then a call if there is no answer in $N$ minutes and it is urgent. Quiet hours and a do-not-disturb switch with chosen exceptions. A rate limit of a few calls a day, never repeating the same alert. On the call, \hivi{} says why in one sentence; the user can talk it through, approve or deny by voice (``yes, send it'' / ``no, wait till I'm home''), or say ``text me the details''. A missed call leaves a voicemail-style summary.
+
+\paragraph{The user calls \hivi{}} The same voice conversation mode: interrupt, ask anything, give tasks that go into the job queue. The assistant knows the user's memory, running jobs and routines, so ``how's that job going?'' works. The transcript and anything done are saved to the activity log.
+
+\paragraph{Safety and GPU budget} Caller ID can be faked, so on a real phone number \hivi{} asks for a spoken PIN or passphrase before doing anything beyond chatting; app and private-line calls are already tied to the user's devices. Voice approvals follow the phone rules; risky actions are read back and need an explicit ``yes''. The kill switch works by voice. A live call needs speech-to-text, the chat model and text-to-speech at once; a heavy job using the GPU is paused for the call and resumed after.
+
+\paragraph{Phases} \phase{CALL-1}: app call, using voice mode. \phase{CALL-2}: \hivi{} calls the user (urgent rules, ladder, quiet hours, rate limits, missed-call summary). \phase{CALL-3}: voice approvals and voice kill switch. \phase{CALL-4}: private phone line. \phase{CALL-5}: optional real phone number with spoken PIN.

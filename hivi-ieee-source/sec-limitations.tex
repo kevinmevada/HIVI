@@ -1,0 +1,34 @@
+\section{Limitations, Risks and Open Questions}
+\label{sec:limitations}
+
+\subsection{What a single-GPU assistant will not do as well}
+
+\paragraph{Judgment on hard problems} A 35B-A3B MoE at Q5 is not a frontier model. On difficult analysis, conflicting sources and subtle code, it will make more mistakes than a cloud model, and no amount of pipeline design changes that. The design's answers are structural---citation checks, code-run gates, a reviewer from a different family, exams---and, where the user permits, governed escalation to a cloud model (\sect{sec:models}). We think this is the right trade for a personal assistant, but it is a trade.
+
+\paragraph{Latency of multi-step work} Deep research takes minutes, an agent-company run takes longer, and both pause other GPU work. Night shift and background jobs exist because of this; they do not remove it.
+
+\paragraph{Small models and tools} Small models misuse tools, drift from schemas, and over-call. The tool router, constrained decoding and step budgets reduce but do not eliminate this; the plan builds fixed pipelines first and model-decided tool calling later for that reason.
+
+\paragraph{Fine-tuning on 8~GB} Character adapters are limited to small models; the companion-model route gives the character to voice mode but not to the main model.
+
+\subsection{Risks the design creates}
+
+\paragraph{Self-modification} An assistant that edits its own code is a new attack surface. The protected zone, the gate that checks that tests are never weakened, the requirement of a proving test, the backup-before-apply rule and automatic rollback are the mitigations; the user's approval of every change is the backstop. We do not claim the loop is safe in the abstract, only that its failure modes are enumerated and each has a mechanism.
+
+\paragraph{Remote access} Phone control makes the laptop reachable. The overlay network, login with device approval, the kill switch and the approval gate on all state-changing actions are the mitigations, and \phase{SEC-3} precedes \phase{LIVE-2} in the build order for that reason.
+
+\paragraph{Prompt injection} \hivi{} will read web pages, files, emails, tool results and screens. The untrusted-content rule, with its ``always ask while such content is present'' clause, is a policy that works only if every content path is tagged; a missed path is a vulnerability. The red-team experiment in \sect{sec:evaluation} targets this.
+
+\paragraph{Memory errors} Automatic extraction will sometimes save a wrong or unwanted fact. Undo, the management screen, calibration rules and the never-stored list limit the damage; they do not make the extractor correct.
+
+\paragraph{Emotional design} Mood-aware styling and a defined character could, if done badly, encourage dependence. The loyalty rules are written to push the other way, and mood readings are not stored by default. Whether the rules hold in practice is an empirical question for the chat-and-personality exam and for the user.
+
+\paragraph{Uncensored model builds} The prototype supports ``abliterated'' builds and retries with thinking on when such a build refuses. This is the user's choice on their own machine; the design treats it as a configuration, measures refusal and quality drift in the exams, and does not otherwise take a position.
+
+\subsection{Open questions}
+
+How much of the character can be carried by prompt and retrieval alone, before fine-tuning is worth its cost? What is the right default budget for the agent company's loops, and does \phase{IDE-6} learning reduce retries in practice? Can a rule-based mood reader be good enough that a learned one is unnecessary? Does the exam-gated upgrade rule keep pace with model releases, or does it make the assistant conservative? And, most broadly: as unified-memory consumer machines and larger consumer GPUs arrive, which of these designs are permanent and which are artefacts of 8~GB?
+
+\subsection{Threats to validity}
+
+This paper reports a design and a prototype built by a small team for one user on one machine. The measurements in \sect{sec:evaluation} are characterisations, not controlled comparisons. The feature list mirrors commercial assistants and is therefore not independent evidence that those features are the right ones. Several components rely on third-party open-source projects whose behaviour and licences may change.

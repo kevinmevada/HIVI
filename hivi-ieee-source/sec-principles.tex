@@ -1,0 +1,26 @@
+\section{Design Principles}
+\label{sec:principles}
+
+The architecture rests on nine principles. Each was learned, in one case the hard way, while building the prototype; we state them once here and refer back to them.
+
+\begin{enumerate}[label=\textbf{P\arabic*}]
+\item \textbf{Local by default; the cloud is governed, never assumed.} Every feature must work with no network and no third party. Cloud models may be used only where the user has allowed it, with the user shown what leaves the machine, under budgets, and with a local fallback (\sect{sec:models}).
+
+\item \textbf{Nothing model-based on the reply path that can run after it.} The user pays every millisecond. Classification in the request path is rule-based and instant; memory extraction, indexing, exams and scouting run after the reply, when the GPU is idle, and yield to the next message (\sect{sec:memory}, \sect{sec:autonomy}).
+
+\item \textbf{Stable prefix first.} Prompts are assembled with the parts that rarely change first---base instructions, character, profile, project instructions---so the engine's prompt cache is reused and per-message additions are small (\sect{sec:memory}, \sect{sec:knowledge}, \sect{sec:ide}).
+
+\item \textbf{Execution beats opinion.} Wherever a check can be run as code---tests, linters, type checkers, schema validation, hash comparison---it is, and an AI review is added on top, never instead (\sect{sec:ide}, \sect{sec:operations}).
+
+\item \textbf{One approval model.} Every action, from any surface (chat, phone, routine, agent, call), has a risk level and goes through the same gate; the same activity log records it (\sect{sec:security}).
+
+\item \textbf{Untrusted content is data.} Text from web pages, files, emails, tool results and screens never becomes instructions; while such content is in the conversation, actions that send, delete or spend always ask (\sect{sec:security}).
+
+\item \textbf{Measured, reversible change.} No model, skill, workflow or self-made code change is applied unless it wins on \hivi{}'s own local exams; the old version stays installed and rollback is automatic (\sect{sec:autonomy}, \sect{sec:evaluation}).
+
+\item \textbf{Honest, loyal, not dependent.} The assistant works for one person, tells them the truth even when unwelcome, flags risk and burnout, keeps secrets, and encourages real people and rest over reliance on itself (\sect{sec:soul}).
+
+\item \textbf{Hardware is an input, not a constant.} The system fingerprints its machine, fits itself to it, never crashes because a setting no longer fits, and reports what became possible after an upgrade (\sect{sec:operations}).
+\end{enumerate}
+
+Two consequences deserve emphasis. First, P2 and P3 together explain why \hivi{} looks different from a cloud assistant \emph{internally} even where it looks the same externally: the same memory feature is built as a post-reply pass with a stable profile block rather than as a per-message service call. Second, P4--P7 together are what makes it acceptable to let an assistant act and improve itself on a personal machine: the approval gate, the untrusted-content rule, code-run gates and local exams are a single safety story told from four sides, and each later feature (skills, connectors, the agent company, self-coding, desktop control) is a client of that story rather than an author of its own.

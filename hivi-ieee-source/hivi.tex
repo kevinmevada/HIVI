@@ -1,0 +1,78 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% Vision / position paper, IEEE conference format (IEEEtran V1.8b).
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric,calc,fit,backgrounds}
+\usepackage{balance}
+\usepackage[hidelinks,breaklinks]{hyperref}
+\usepackage{url}
+\urlstyle{same}
+
+\setlist{nosep,leftmargin=*}
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+\newcommand{\hivi}{HIVI}
+\newcommand{\phase}[1]{\textsc{#1}}
+\newcommand{\sect}[1]{Sec.~\ref{#1}}
+\renewcommand{\arraystretch}{1.12}
+
+
+\begin{document}
+
+\title{\hivi{}: A Vision for a Private, Local-First Personal AI Assistant on Consumer Hardware}
+
+\author{\IEEEauthorblockN{Kevin Mevada}
+\IEEEauthorblockA{Independent Researcher\\
+Email: kevin.mevada@example.com}}
+
+\maketitle
+
+\begin{abstract}
+Conversational AI assistants have become daily tools, but the dominant designs run on vendor clouds: the user's memory, files and conversations live on someone else's servers, and the assistant's capabilities are bounded by what the vendor chooses to offer. This paper presents the vision and design of \hivi{}, a personal AI assistant that runs entirely on a single consumer machine (an 8~GB laptop GPU with 32~GB of RAM) and is designed to grow with its owner's hardware rather than with a subscription. We argue that a local-first assistant is not merely a cloud assistant with smaller models, but a different system with its own design problems: fitting several cooperating models into one small GPU; keeping persistent memory, retrieval and automatic learning off the critical path of every reply; running untrusted code and reading untrusted content on the user's own machine without compromising it; and letting the assistant act on the user's behalf---through tools, background jobs, a phone, and eventually voice calls---under one consistent approval model. We describe an architecture organised in nine build stages, from a chat control server with adaptive sampling and automatic engine selection, through persistent local memory, emotion-aware response styling and a security base, to an agent ``company'' that turns requests into tested, merged code on a single GPU, and finally to always-on operation, self-improvement under local exams, and telephony. For each component we give the design, its rationale under the hardware constraint, the explicit failure modes it is built to avoid, and a staged plan with exit criteria. A prototype implements the foundation and the first two stages. We close with an evaluation plan centred on \emph{local exams}---fixed task suites scored on the owner's own hardware---and a frank discussion of limitations, risks and open questions.
+\end{abstract}
+
+\begin{IEEEkeywords}
+personal AI assistants, local inference, large language models, mixture-of-experts, persistent memory, retrieval-augmented generation, multi-agent systems, LLM security, prompt injection, on-device AI, consumer hardware
+\end{IEEEkeywords}
+
+\input{sec-intro}
+\input{sec-related}
+\input{sec-principles}
+\input{sec-foundation}
+\input{sec-models}
+\input{sec-memory}
+\input{sec-soul}
+\input{sec-security}
+\input{sec-knowledge}
+\input{sec-capabilities}
+\input{sec-ide}
+\input{sec-autonomy}
+\input{sec-operations}
+\input{sec-buildorder}
+\input{sec-evaluation}
+\input{sec-limitations}
+\input{sec-conclusion}
+
+\appendices
+\input{sec-appendix}
+
+\balance
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

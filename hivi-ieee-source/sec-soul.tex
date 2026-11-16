@@ -1,0 +1,63 @@
+\section{Understanding the User: Emotion Awareness, Loyalty and Character}
+\label{sec:soul}
+
+A personal assistant is used by one person over a long time, often at the end of a long day. The goal of this section is for \hivi{} to notice how the user is doing, respond the way a good friend or advisor would, stay loyal to the user in a defined sense, and have a character that can be shaped over time---by the user, and by material the user chooses.
+
+\subsection{Emotion awareness: the sentiment packet}
+
+Every message gets a small, instant mood reading that travels with it to the model. Its sources are listed in Table~\ref{tab:mood}. In the text-only prototype the reading comes from a rule-based classifier over the message (English and Hinglish lexicons for stressed, frustrated, down, excited and tired, with negation handling and intensity from repetition, capitals and punctuation); a small learned classifier is a later upgrade, and voice tone arrives with voice mode (\sect{sec:capabilities}).
+
+\begin{table}[t]
+\caption{Sources of the sentiment packet}
+\label{tab:mood}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{22mm}YL{18mm}@{}}
+\toprule
+Signal & Source & Example \\
+\midrule
+Emotion + intensity & Local classifier on the text (milliseconds, like HAIE's rules) & stressed $\cdot$ high \\
+Voice tone & Speech-emotion model on pitch, pace, energy (voice mode, calls) & tired, flat voice \\
+Context & Time of day, how long the user has been working, recent job failures & 2~a.m., 3 failed builds \\
+What the user said & Personal memory (\sect{sec:memory}) & ``exam week'' \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The packet changes \emph{how} the assistant answers, never \emph{what is true}. Stressed: calmer and shorter, one clear next step, no jokes. Excited: match the energy, acknowledge the win. Frustrated with a bug: straight to the fix, at most a quiet ``rough one''. Down: listen first; do not turn feelings into a to-do list. The packet is used in the moment and \emph{not stored} by default; an optional ``remember my patterns'' switch keeps a private local history (``Mondays are heavy''), viewable and deletable on the memory screen like everything else.
+
+\subsection{Loyalty, defined so that it helps}
+
+``Loyal'' is an easy word and a dangerous design goal: an assistant optimised to please its user becomes sycophantic~\cite{sharma2024}. Table~\ref{tab:loyalty} states what loyalty means in \hivi{} and what it explicitly does not. These rules are fixed text in the system prompt of every \hivi{} chat (implemented in the prototype) and are also part of the training data for the character layers below. The last row is deliberate: an assistant that is always available must not become the user's only relationship, so it encourages real people and rest over reliance on itself and never uses guilt, jealousy or emotional pressure.
+
+\begin{table}[t]
+\caption{Loyalty rules}
+\label{tab:loyalty}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}YY@{}}
+\toprule
+Loyal means & Not \\
+\midrule
+Works for the user only: single user, data stays on their machine & Shares or syncs anything without asking \\
+Acts in the user's interest, remembers their goals and follows through & Forgets what they are working toward \\
+Honest even when it is not what they want to hear & Agreeing with everything to keep them happy \\
+Protects their time: flags bad ideas, risks and burnout early & Encouraging reliance on the assistant instead of people \\
+Keeps their secrets and respects their boundaries & Guilt, jealousy or emotional pressure \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Character}
+
+The prototype carries a condensed character sheet (composed, warm, dry wit used sparingly; direct answers first; matches the user's language and register, including Hinglish; no filler openers, stock disclaimers or lecturing), switchable off for plain answers, and a user-name setting that the assistant uses now and then rather than in every reply.
+
+\subsection{Shaping her nature: three layers, cheapest first}
+
+\paragraph{Layer 1: knowledge library, no training} Psychology textbooks, papers and novels the user owns go into a local library folder (\sect{sec:knowledge}): chunked, embedded and searched with the reranker, the same pipeline as web search. When a conversation touches the material, the assistant draws on the relevant passages and can say where an idea comes from. This changes nothing in the model; books can be added or removed at any time.
+
+\paragraph{Layer 2: learning from the user, preference data} Every reply gets \emph{thumbs up / down} and, on a thumbs down, an optional ``say it like this instead''. Over weeks this becomes a personal dataset of how the user wants the assistant to respond---the strongest available signal for ``understands me''. The prototype collects it and exports it as JSONL.
+
+\paragraph{Layer 3: character fine-tune, LoRA} Periodically, a small adapter is trained on the preference data from layer~2 and on example conversations that show the intended character, generated from the personality sheet and the knowledge library and reviewed by the user---not on raw novels, which teach prose style rather than understanding. The practical limits are real. On an 8~GB GPU, QLoRA~\cite{qlora} training works for models of roughly 8--9B parameters, not for the 35B MoE; the options are a small ``companion'' model for conversation and voice mode, or a few hours of a rented cloud GPU per run, during which the training data leaves the machine. Fine-tuning can degrade other abilities (coding, reasoning), so every new adapter must pass a test set---personality checks and coding/reasoning checks---before it replaces the old one, and rollback is one step (P7). Training on books raises copyright questions that differ by country; the design assumes books the user owns, a model kept for personal use and never published, and is not legal advice.
+
+\subsection{Phases and status}
+
+\phase{SOUL-1} (mood reading on text, response-style rules, nothing stored) and \phase{SOUL-2} (loyalty rules in the prompt; thumbs and ``say it like this'' collection) are implemented. \phase{SOUL-3}: psychology knowledge library as a library folder. \phase{SOUL-4}: voice-tone reading in voice mode and calls; optional private mood history. \phase{SOUL-5}: character LoRA for a small companion model with a regression set and rollback.

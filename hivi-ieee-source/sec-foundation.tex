@@ -1,0 +1,65 @@
+\section{The Current Foundation}
+\label{sec:foundation}
+
+Everything in later sections builds on a prototype that runs today on the target machine. We describe it briefly, because several later design decisions only make sense against it, and because it supplies the first measurements (\sect{sec:evaluation}).
+
+\subsection{Overview}
+
+Fig.~\ref{fig:arch} shows the layers. A single control server (FastAPI, port 7860) owns the model lifecycle and exposes an OpenAI-compatible API at \texttt{/v1}; the chat UI, the desktop window and every agent talk to it, never to an engine directly. Behind it, one of two engines holds the chat model on port 8080---\texttt{llama.cpp}'s \texttt{llama-server}~\cite{llamacpp}, or Colibr\`i~\cite{colibri} for the Qwen family. Two side services (an embedding model and a reranker) run as separate \texttt{llama-server} processes on their own ports, CPU-only by default so that the GPU stays with the chat model; they start on first use and stop after ten minutes idle. A memory gateway at \texttt{/memory/v1} fronts the project memory bank. A desktop launcher wraps the UI in its own native window (pywebview over WebView2) with the application's own identity, icon and single-instance behaviour, so that \hivi{} opens like an application and not as a browser tab.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=6mm, inner sep=3pt, fill=white},
+  layer/.style={draw, rounded corners=3pt, inner sep=5pt, fill=gray!8},
+  box/.append style={fill=white},
+  arr/.style={-{Latex[length=2mm]}, thick},
+  node distance=3mm and 8mm,
+]
+\node[box, minimum width=28mm] (ui) {Chat UI\\(browser / WebView2)};
+\node[box, minimum width=28mm, right=of ui] (desk) {Desktop\\launcher};
+\node[box, minimum width=28mm, right=of desk] (agents) {Agents, tools,\\phone (later)};
+\node[box, minimum width=96mm, below=5mm of desk] (server) {\textbf{Control server} (FastAPI, :7860)\\OpenAI-compatible \texttt{/v1} proxy $\cdot$ HAIE adaptive sampling $\cdot$ A1 prompt router $\cdot$ memory \& mood layer $\cdot$ health $\cdot$ backups};
+\node[box, minimum width=28mm, below=5mm of server.south west, anchor=north west, xshift=0mm] (llama) {llama-server\\(:8080, router mode)};
+\node[box, minimum width=28mm, right=of llama] (coli) {Colibr\`i\\(:8080, Qwen)};
+\node[box, minimum width=30mm, right=of coli] (aux) {Embedding :8081\\Reranker :8082 (CPU)};
+\node[box, minimum width=44mm, below=4mm of llama.south west, anchor=north west] (stores) {SQLite: memory.db, chats.db,\\ledger, HAIE evals};
+\node[box, minimum width=44mm, right=of stores] (hind) {Hindsight project memory\\(LangGraph ProjectRoom)};
+\draw[arr] (ui) -- (ui |- server.north);
+\draw[arr] (desk) -- (server);
+\draw[arr] (agents) -- (agents |- server.north);
+\draw[arr] (server.south -| llama) -- (llama);
+\draw[arr] (server.south -| coli) -- (coli);
+\draw[arr] (server.south -| aux) -- (aux);
+\draw[arr] (stores) -- (stores |- server.south);
+\draw[arr] (hind) -- (hind |- server.south);
+\node[font=\scriptsize, color=gray!60!black, right=2mm of aux] {one GPU};
+\end{tikzpicture}
+\caption{Layers of the \hivi{} prototype. Everything reaches the models through one control server, which is where memory, mood, routing and health live. Side services stay on the CPU so the 8~GB GPU belongs to the chat model.}
+\label{fig:arch}
+\end{figure*}
+
+\subsection{Components that run today}
+
+\paragraph{Model library and registry} Models are GGUF files discovered under a models root (local disk or a USB library with checksums), with engine, quantisation and parameter count read from the file. A vision projector file beside a model marks it as vision-capable; such models load in \texttt{llama.cpp} with the projector and the UI's image button becomes active.
+
+\paragraph{Engine selection and router mode} Each model has an engine rule (Colibr\`i for the Qwen family, \texttt{llama.cpp} otherwise), overridable per request. \texttt{llama.cpp} models run in \emph{router mode}: one process holds up to three models and switches among them without restarting, unloading the least recently used when VRAM (with a configurable margin) or RAM (with a reserve) would be exceeded. Swaps are serialised; a request that needs another model waits for in-flight replies to drain rather than cutting them off. This is the mechanism later sections rely on to keep a fast model resident while a heavy one swaps (\sect{sec:ide}).
+
+\paragraph{HAIE: adaptive sampling} The \hivi{} Adaptive Intelligence Engine classifies each message---intent, complexity, deliverable, expected length---and injects sampling parameters (temperature, top-$p$, maximum tokens, thinking on/off and effort) into the request only where the client left them unset. By default classification is rule-based and instant (P2); an LLM classifier for ambiguous requests is opt-in because it costs a model call before every ambiguous reply. HAIE also adapts thinking: Qwen3-class models think at maximum effort unless told otherwise, which on an 8~GB GPU turns a one-line answer into a minute of hidden reasoning; HAIE sets thinking per message and the UI's refusal-retry path forces it on when an uncensored build refuses a direct answer.
+
+\paragraph{A1 prompt router} A classifier scores the loaded model against the registry for the current prompt (task type, complexity, image presence) and the UI shows a one-click ``Switch'' hint when a better-suited model exists.
+
+\paragraph{Memory gateway and ProjectRoom} The project memory core (Hindsight) stores facts per project with a ledger-first retain, a retry queue and correction/supersession rules; the gateway waits out model switches so a retain never fails because the backend was swapping. The ProjectRoom is a LangGraph graph in which the model writes a program from a specification plus recalled memory, a subprocess runs its tests, and failures feed a retry---the seed of the agent company in \sect{sec:ide}, with SQLite checkpoints for recovery.
+
+\paragraph{Stage 1--2 features implemented} During the work reported here the prototype gained the first two build stages: a live system-health chip and panel (\phase{HEALTH-1}), persistent personal memory with explicit and automatic writing, recall, temporary chats, export/import and a management screen (\phase{MEM-1}--\phase{MEM-4}), rule-based mood reading and loyalty/character rules in the prompt with feedback collection (\phase{SOUL-1}, \phase{SOUL-2}), and daily local snapshots with restore (\phase{BAK-1}). Their designs are given in the corresponding sections.
+
+\subsection{What the prototype taught us}
+
+Three lessons from the prototype shaped the principles in \sect{sec:principles} and recur below.
+
+First, \emph{on one GPU, every synchronous model call is a user-visible delay}, and the temptation to add ``just one small classifier'' before each reply must be resisted. HAIE's LLM path is opt-in, and memory extraction runs after the reply, for this reason.
+
+Second, \emph{project memory and personal memory have different economics}. Hindsight's LLM-based retain takes about 90--110~s per short document on Colibr\`i (measured: 109~s in the stabilisation report), which is acceptable for an agent summarising a project milestone and unacceptable for a chat. Personal memory therefore has its own lightweight store (\sect{sec:memory}).
+
+Third, \emph{coordination between features matters more than any single feature}. The backend gate that keeps memory traffic and model switches from colliding, the drain-before-swap rule, and the ownership rule for processes (\hivi{} only stops processes it started, and reports a busy port rather than taking it) were each added after a concrete failure. Later sections generalise this into one scheduler, one approval gate and one activity log.

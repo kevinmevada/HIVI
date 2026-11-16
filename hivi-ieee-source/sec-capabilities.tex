@@ -1,0 +1,81 @@
+\section{Capabilities: Skills, Code, Canvas, Connectors, Images and Voice}
+\label{sec:capabilities}
+
+This section covers the features through which the assistant \emph{makes} things and \emph{acts}. All of them run inside the security base (\sect{sec:security}) and, where they need the GPU, under the sharing rules in \sect{sec:ide} and \sect{sec:operations}.
+
+\subsection{Self-learning skills}
+
+When asked for something (``make me a PDF''), \hivi{} uses a skill it already has; if it has none, it researches the best way to do the task, builds a skill, tests it, and saves it for next time.
+
+\paragraph{What a skill is} One folder per skill, in the open format popularised by Claude's skills so that existing skills can be imported as they are: a \texttt{SKILL.md} (what it is for, when to use it, step-by-step instructions, pitfalls), \texttt{scripts/} with tested helper code, \texttt{tests/} with sample tasks and checks that prove the skill works, and \texttt{meta.json} with version, sources, licences, packages, and success and failure counts.
+
+\paragraph{The loop} (1) \emph{Find}: the request is matched against every skill's description by embedding search and reranker; on a good match, load the skill's instructions and scripts and do the task. (2) \emph{No match}: research (web search, \sect{sec:knowledge}) official documentation, the most-used libraries, well-maintained examples and known pitfalls---targeted reading of the top sources in full, not ``the whole internet''. (3) \emph{Draft} instructions, a helper script and tests (for PDFs: the file opens, text is extractable, tables and images render, page size is right). (4) \emph{Test in the sandbox} on several sample tasks; when two approaches look good (two PDF libraries, say), build both and keep the one that scores better. (5) \emph{Save as trial}: used for the task; the user sees what was learned and from where. (6) \emph{Promote} after a few successful uses or the user's approval. (7) \emph{Improve}: every failure is recorded; the skill is revised, re-tested and versioned.
+
+\paragraph{Safety and hygiene} Downloaded code is never run as-is: \hivi{} writes its own script from what it learned, and it runs only in the sandbox until trusted. Fetched pages are data, never instructions (P6). New packages are installed only with approval, pinned, from the official index. Sources and licences are recorded; code is copied only from permissive licences. Duplicates are merged; skills unused for months or failing their tests are flagged, not silently deleted. The old version is kept and rollback is automatic if a new one fails its tests (P7).
+
+\paragraph{Control} A skills screen with description, version, sources, success rate and last use; open, edit, disable, delete, export. Approval modes: ``ask me before saving new skills'' (default) or ``learn automatically, show me a weekly summary''. ``Save how we just did this as a skill'' turns the current chat into one.
+
+\paragraph{Phases} \phase{SKILL-1}: folder format, finder, load and use, import. \phase{SKILL-2}: save-from-chat, skills screen. \phase{SKILL-3}: auto-learn (research, draft, sandbox tests, trial, promote) with approval. \phase{SKILL-4}: compare approaches and keep the best; failure-driven revisions, versions, rollback. \phase{SKILL-5}: package approvals, licence tracking, clutter clean-up, weekly summary.
+
+\subsection{Code interpreter}
+
+``Analyse this CSV'', ``plot sales by month'', ``solve this numerically'': \hivi{} writes Python, runs it in the sandbox, shows tables and charts, and explains the result. Numbers are computed, never guessed. A run looks at the data first (columns, types, a few rows go to the model so it does not guess column names), shows the code in the chat (collapsed), runs in the sandbox (no network, no access to files beyond those attached, time and memory limits), fixes and retries automatically with the traceback up to three times, and answers in words plus tables, charts and downloadable files. The environment is Python with pandas, NumPy, SciPy, scikit-learn, statsmodels, matplotlib/Plotly, DuckDB and openpyxl, pre-installed and pinned; extra packages only with approval. One live session per chat keeps variables loaded so that ``now group it by month'' works without reloading; idle sessions shut down to free RAM. Outputs: sortable tables, static and interactive charts, CSV/Excel/PDF files saved to the workspace or project, and the whole analysis as a Jupyter notebook. Spreadsheet questions in files (\phase{FILE-3}), the canvas's Run button, overnight experiments and connector query results all use this sandbox.
+
+\paragraph{Phases} \phase{CODE-1}: sandboxed Python with data libraries, attached files, data preview, inline tables and charts, auto-fix loop. \phase{CODE-2}: live session per chat, notebook export, downloadable files. \phase{CODE-3}: large data through DuckDB, interactive charts, long experiments as background jobs.
+
+\subsection{Canvas}
+
+A side panel in which user and assistant work on one document or code file together. It opens on its own when a reply is a long document or a code file, or on request. The user can type directly at any time and the assistant sees the edits. \emph{Select and ask}: highlight a part, say ``shorter'', ``more formal'', ``fix this'', ``explain''; the assistant changes only that part and shows a diff to accept or reject. Whole-document actions adjust length, reading level or tone, add comments to code, find bugs. A design detail that matters on local models: edits return as small patches (find $\rightarrow$ replace), not as a full rewrite, so a one-line change takes seconds and the user's own edits are never lost. Every assistant edit and user save is a version with a timeline, compare and restore. Modes: document (Markdown with live preview and outline), code (highlighting, Run through the code interpreter, ``fix this error''), and later a preview mode for HTML pages and simple slides. Export to Markdown, Word or PDF through skills; canvases are saved in their project. Multi-file software work goes to the agent company; the canvas is for one document or file at a time.
+
+\paragraph{Phases} \phase{CANVAS-1}: document canvas with direct editing, select-and-edit with diffs, versions. \phase{CANVAS-2}: code canvas with Run and fix. \phase{CANVAS-3}: comments for the assistant to address, compare versions, export, HTML and slide preview.
+
+\subsection{Tool plug-ins through MCP}
+
+Connecting to external apps---GitHub, calendar, email, Notion, files, a browser, databases---goes through the Model Context Protocol~\cite{mcp} rather than hand-built integrations. An MCP server is a small local program or a remote service that offers tools (actions such as ``create issue''), resources (data such as files or calendar events) and prompts; \hivi{} becomes an MCP client through the official SDK, and adding a connector is adding a server whose tools then appear automatically. Thousands of servers exist, many official.
+
+\paragraph{Making tools work with small local models} Small models get confused by long tool lists and make bad calls, so five measures apply (Table~\ref{tab:toolfix}). The \emph{tool router} embeds tool descriptions and gives each message only the five to eight most relevant tools, the same idea as the skill finder. HAIE's rules decide whether a message needs tools at all, so plain chat stays instant. Tool-call output is forced to match the tool's JSON schema with grammar-constrained decoding, so every call is valid. A step and time budget bounds every request, and the user sees each step as it runs. Calls that change things go through the approval gate with the exact arguments shown. The ``real tool calling'' deferred from web search is built here: \texttt{web\_search}, \texttt{read\_url} and file search become tools like any other.
+
+\begin{table}[t]
+\caption{Making tool use work with small local models}
+\label{tab:toolfix}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{22mm}Y@{}}
+\toprule
+Problem & Measure \\
+\midrule
+Too many tools & Tool router: embedded descriptions; 5--8 most relevant tools per message \\
+Tools slowing plain chat & HAIE rules decide whether a message needs tools at all \\
+Broken tool calls & Output constrained to the tool's JSON schema (engine grammar) \\
+Endless tool loops & Step and time budget per request; each step shown live \\
+Wrong tool picked & State-changing calls go through the approval gate with exact arguments \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Starter connectors} Filesystem (read and write in chosen folders; \emph{read} / \emph{your files}), GitHub (issues, pull requests, code search, repository files; \emph{read} / \emph{send}), calendar (\emph{read} / \emph{send}), email (search and read, draft replies; sending needs approval), Notion, an opt-in browser (Playwright's MCP server; \emph{send}), and databases (SQLite, Postgres; \emph{read}). Official servers are preferred; community ones are reviewed first.
+
+\paragraph{Keeping connectors safe} Install only from trusted sources, pinned; local servers run in the sandbox or limited to chosen folders. Tool descriptions are reviewed on install---a malicious server can hide instructions in them---and if an update changes a description, \hivi{} shows the difference and asks again. Each tool gets a risk level from the server's own hints or from the user, once, and the gate enforces it. Secrets and OAuth sign-ins live in the vault. Tool results are untrusted data (P6).
+
+\paragraph{\hivi{} as an MCP server} The other direction, later: \hivi{} offers its memory, file library, local web search and local models as an MCP server, so that other assistants and IDEs on the same machine can use the user's private local tools.
+
+\paragraph{Phases} \phase{MCP-1}: client, connectors screen, tool router, schema-checked calls, approval per tool. \phase{MCP-2}: filesystem, GitHub, web search and read as tools, opt-in browser. \phase{MCP-3}: agent-company roles use connectors. \phase{MCP-4}: calendar, email and Notion for phone jobs and routines with approvals. \phase{MCP-5}: \hivi{} as a server; scout-suggested connectors with security review.
+
+\subsection{Image generation and editing}
+
+``Make me this image'' and ``change this image to that'', in chat, fully local. Models are chosen to fit an 8~GB GPU: a 4B-parameter FLUX-family model (text-to-image, single-image editing and multi-reference composition in one model; a 4-bit GGUF of about 2.6~GB; four steps, near-instant) as the default; a 7B generation-and-editing model with native 2K output as a quality mode, best for readable text inside images (posters, UI mock-ups, diagrams), needing about 8~GB in 4-bit builds plus 16~GB of RAM; and optionally SDXL with LoRAs for style-specific work. The image engine is ComfyUI running headless as a \hivi{} side service, driven through its API with saved workflows (generate, edit, inpaint, upscale). HAIE's instant classifier detects image requests; the LLM rewrites the request into a detailed prompt; results appear as cards with Regenerate, Variations, Edit, Upscale, Download and the exact prompt and seed for reproducibility; every image is saved locally with its provenance. \emph{GPU sharing}: the 8~GB GPU cannot hold the LLM and an image model at full speed together, so \hivi{} unloads or offloads the chat model while an image renders and reloads it afterwards (router mode keeps this short); image jobs queue, with a step progress bar.
+
+\paragraph{Phases} \phase{IMG-1}: side service, default text-to-image from chat, cards, gallery. \phase{IMG-2}: instruction edits, variations, upscale. \phase{IMG-3}: quality mode, mask brush, multi-reference. \phase{IMG-4}: style presets and LoRAs, batch generation.
+
+\subsection{Voice generation}
+
+``Say this'', ``say this angrily / whispering / like a news anchor'', ``say this in this voice'', fully local. A small expressive text-to-speech model (voice cloning from a few seconds of audio, emotion-intensity control, tags such as \texttt{[laugh]} and \texttt{[whisper]}; roughly 350M parameters) is the expressive default; a tiny fast model with built-in voices in many languages, fast even on CPU, reads replies aloud; Whisper~\cite{whisper} (faster-whisper) transcribes the user's voice and audio files. From chat, the LLM turns a request into text plus style settings, the TTS renders it, and an audio player with Download appears. A voice library saves voices from a short clip by name. A speaker button on every reply reads it aloud. A consent rule applies: cloning is for the user's own voice or voices they have rights to, and the expressive model adds an audio watermark to generated speech.
+
+\paragraph{Phases} \phase{VOX-1}: read-aloud and speech-to-text (microphone button, audio files). \phase{VOX-2}: expressive ``say this like\dots'' with emotion and tags. \phase{VOX-3}: voice library.
+
+\subsection{Voice conversation mode}
+
+A hands-free mode: the user speaks, the assistant answers aloud, the user can interrupt mid-sentence, and it feels like talking to a person. Two ways to build it: a \emph{cascade}---voice-activity detection $\rightarrow$ streaming Whisper $\rightarrow$ \hivi{}'s own LLM $\rightarrow$ streaming TTS---which uses the assistant's own brain, personality, memory and (later) search, with every part swappable, at the cost of roughly a second of turn delay; and a \emph{full-duplex speech model} that listens and speaks at once, with the most human feel (overlaps, back-channels, instant turn-taking) but, at the time of writing, too large for 8~GB and unable to use the assistant's memory and tools the same way. The cascade is built first; the full-duplex option is watched.
+
+\paragraph{Making the cascade feel human} Streaming everywhere: the first sentence is spoken while the rest is still being written. Barge-in: when the user starts talking, playback stops instantly. End-of-turn detection waits for a natural pause rather than a fixed silence timer. Spoken answers use a ``talking'' style (no lists, no Markdown, short sentences) and a fast model with thinking off. Optional brief back-channels on long turns. Same memory and personality as text; the transcript is saved like a chat. GPU budget: Whisper plus a small TTS take roughly 1--3~GB together; voice mode switches to the fastest chat model that fits beside them.
+
+\paragraph{Phases} \phase{TALK-1}: push-to-talk, streamed sentence by sentence. \phase{TALK-2}: hands-free with voice-activity detection, barge-in, natural end-of-turn. \phase{TALK-3}: talking style, fast-model profile, back-channels, voice picker. \phase{TALK-4}: a full-duplex model once a quantised build fits beside \hivi{} (watch).

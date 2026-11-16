@@ -1,0 +1,37 @@
+\section{Introduction}
+\label{sec:intro}
+
+Large language model (LLM) assistants have moved from novelty to infrastructure in a few years. The best-known ones---ChatGPT, Claude, Gemini---share an architecture: a frontier model served from a vendor's data centre, a thin client, and an account that accumulates the user's conversations, uploaded files and, increasingly, a persistent ``memory'' of who the user is. The convenience is real. So is the asymmetry. The user's most personal data is held by a third party under terms the user does not control; the assistant's abilities are gated by what the vendor ships and prices; and the assistant is unavailable when the network is, or when the vendor changes course.
+
+At the same time, two developments have made a different design practical. Open-weight models have closed much of the quality gap with proprietary ones, and mixture-of-experts (MoE) architectures in particular deliver strong results with only a few billion \emph{active} parameters per token~\cite{qwen3,gptoss}. And inference engines written for consumer hardware---\texttt{llama.cpp}~\cite{llamacpp} and, more recently, Colibr\`i~\cite{colibri}, which streams MoE experts from disk---run such models on machines people already own. A 35B-parameter MoE with roughly 3B active parameters now answers at useful speed on an 8~GB laptop GPU.
+
+This paper asks what a personal assistant should look like when it is built on that foundation from the start: \emph{local first}, owned by one person, running on one machine, with the cloud as an optional and explicitly governed resource rather than the substrate. We call the system \hivi{}. It is a vision paper in the sense that most of what we describe is designed and staged rather than finished; it is also a design paper in that every component is specified against a concrete hardware budget (an NVIDIA RTX~5060 laptop GPU with 8~GB VRAM, 32~GB RAM, Windows), with named failure modes and testable exit criteria, and a working prototype implements the foundation and the first two stages.
+
+\subsection{Why local-first is a different problem}
+
+It is tempting to see a local assistant as a cloud assistant with a smaller model. Our experience building the prototype says otherwise. Four constraints reshape the design.
+
+\paragraph{One small GPU, many cooperating models} A capable assistant is not one model. It needs a chat model, an embedding model and a reranker for retrieval, a vision projector for images, and, later, speech-to-text, text-to-speech and image generators. In the cloud these are separate services; on an 8~GB GPU they compete for the same memory. Every feature in \hivi{} is therefore designed around \emph{who holds the GPU when}: side services on the CPU, models batched by phase, a router that keeps a fast model resident while a heavy one swaps, and a scheduler that pauses background work for foreground use.
+
+\paragraph{Latency is paid by the user, not amortised across users} A cloud service can run a memory-extraction pass or a safety classifier on every message because it has spare capacity. On one GPU, anything added to the reply path is felt directly as delay. \hivi{}'s memory, mood reading and retrieval are therefore designed to never hold a reply back: instant rule-based classifiers in the request path, and model-based work only \emph{after} a reply, when the GPU is idle, cancelled by the next message.
+
+\paragraph{The machine is the user's own} Running downloaded code, reading untrusted web pages and emails, and acting on the user's behalf are far more dangerous on the user's own machine than in a vendor sandbox: the assistant sits next to the user's files, credentials and apps. \hivi{} builds a single security base---bind to localhost, an approval gate with risk levels, a secrets vault, a sandbox, an append-only activity log, and a rule that fetched content is data rather than instructions---\emph{before} any feature that would need it.
+
+\paragraph{Hardware changes over time} A person upgrades a laptop, adds a GPU, builds a home server. A cloud assistant never notices. \hivi{} treats hardware as a first-class, changing input: it fingerprints the machine on every start, re-tunes itself, and tells the user, in its own voice, what it can now do.
+
+\subsection{Contributions}
+
+This paper makes the following contributions.
+\begin{enumerate}
+\item A set of design principles for local-first personal assistants (\sect{sec:principles}) derived from building one: local by default with governed cloud use; nothing model-based on the reply path that can run after it; execution beats opinion wherever a check can be run as code; one approval model for every action; measured, reversible upgrades.
+\item A complete architecture (\sect{sec:foundation}--\sect{sec:operations}) covering engines and models, persistent memory, emotion-aware styling and loyalty rules, a security base, knowledge access (web, files, projects), creative and tool capabilities, an agent company for software work, autonomous operation and self-improvement---each specified against an 8~GB GPU, with its failure modes and a staged plan.
+\item A \emph{build order} (\sect{sec:buildorder}) of nine stages with explicit dependencies, chosen so that every stage ends in something used daily and security precedes exposure.
+\item An evaluation methodology (\sect{sec:evaluation}) based on \emph{local exams}: per-role task suites with automatic scoring, run on the owner's hardware, that gate every model, skill and workflow change; and the measurements the prototype already reports.
+\item A candid account of limitations and risks (\sect{sec:limitations}), including what a single-GPU assistant will not do as well as a frontier cloud model, and where the design relies on the user's judgment.
+\end{enumerate}
+
+\subsection{Paper organisation}
+
+\sect{sec:related} places \hivi{} among cloud assistants, local inference, memory systems, agent frameworks and LLM security. \sect{sec:principles} states the design principles. \sect{sec:foundation} describes what exists today. Sections \ref{sec:models} to \ref{sec:operations} present the architecture by area: models and engines; memory; emotion, loyalty and character; security; knowledge access; capabilities; the agent company; autonomy; and operations. \sect{sec:buildorder} gives the build order and dependency graph, \sect{sec:evaluation} the evaluation plan, \sect{sec:limitations} limitations and risks, and \sect{sec:conclusion} concludes. Appendix~\ref{app:hardware} gives the hardware plan the design is meant to grow into.
+
+Throughout, phases are named with a tag (for example \phase{MEM-2}) so that the staged plans in each section can be cross-referenced from the build order. Where a feature is implemented in the prototype we say so; everything else is design.

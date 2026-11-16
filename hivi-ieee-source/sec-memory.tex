@@ -1,0 +1,67 @@
+\section{Personal Memory}
+\label{sec:memory}
+
+The goal is the memory feature users know from cloud assistants---the assistant remembers the user across chats, and the user can see, edit and delete every memory---with the data stored permanently on the user's own machine and nothing on the reply path (P2).
+
+\subsection{Why a separate store}
+
+The prototype already had project memory (Hindsight), but it is memory \emph{for agents}: one bank per project, with facts extracted by running the LLM over a document, which takes about 109~s per retain on the target hardware (\sect{sec:foundation}). The chat UI did not use memory at all; every chat started from zero. Personal memory therefore gets its own lightweight local store. Agents can still read it (a user's coding preferences, say), and project knowledge stays in Hindsight.
+
+\subsection{Two kinds of memory}
+
+\emph{Saved memories} are short facts and preferences about the user, one line each: ``Prefers PowerShell one-liners over scripts'', ``Building \hivi{} AutoApply''. \emph{Chat history} is the record of past conversations, searchable (``what did we decide about the router last week?''). The two are deliberately kept apart: facts are what carries across chats and shapes answers; history is a record that the user consults and that is not read back into new chats, since dragging old transcripts into every prompt would consume the context window and slow every reply.
+
+\subsection{Storage}
+
+One SQLite file, \texttt{data/memory/memory.db}, holds each memory's text, category (\emph{about you}, \emph{preferences}, \emph{people}, \emph{projects}, \emph{other}), creation and update times, the chat it came from, and an embedding vector from the local embedding model when the side service has run. It survives restarts and model switches, and nothing leaves the machine. Export and import are available as JSON or Markdown, for backup or moving to a new PC; automatic snapshots are covered in \sect{sec:operations}. Chat history lives in a second file, \texttt{chats.db}, with a full-text index. A fixed rule, enforced by pattern matching on every write path (explicit command, automatic extraction, the management screen, import): \emph{passwords, card and bank numbers, government identifiers and API keys are never stored, even when the user asks}.
+
+\subsection{How memories are written without slowing replies}
+
+\begin{enumerate}
+\item \textbf{On request.} ``Remember that \dots'' saves immediately; ``forget \dots'' deletes immediately. The server recognises these commands---in English and in Hinglish (``yaad rakhna ki \dots'', ``bhool jao \dots'')---before the request reaches a model, answers them itself in a streamed reply of the same shape as a model reply, and shows a chip under the message. Conversational uses (``remember when we \dots?'', ``do you remember my name?'') are not commands and go to the model.
+\item \textbf{Automatically, after the reply.} When a reply has finished and the GPU is idle, a small extraction pass reads the last exchange and the saved facts related to it and proposes candidate facts as JSON, checked against a schema. The pass is scheduled after a short grace period and is \emph{cancelled by the next user message}, so learning never competes with the user for the GPU. It uses the loaded chat model with thinking off and a small output budget.
+\item \textbf{De-duplicate and update.} Each candidate is compared with existing memories (embedding similarity when available, lexical overlap otherwise). A near-duplicate is skipped; a changed fact \emph{replaces} the old one (``moved to infra team (previously search)'') rather than piling up beside it, either because the extractor names the fact it replaces or because the candidate is close to an existing fact on the same subject.
+\item \textbf{Undo.} A ``Memory updated'' chip appears under the message naming what changed, with Undo. Every write---explicit, automatic or imported---is logged in a batch so that one click reverses everything a pass did.
+\item \textbf{Calibration.} A single passing mention is not saved; stable facts (people, projects, preferences, tools) are. The extractor is told to save only durable facts the \emph{user} stated about themselves, never anything the assistant said, one-off tasks, mood, or opinions about the assistant.
+\end{enumerate}
+
+\subsection{How memories are used}
+
+A \emph{profile block} of the most important memories---ordered by category, about-you first, then preferences, people and projects---is placed in the system prompt at the start of every chat within a budget of roughly 300--500 tokens. It changes rarely, so the engine's prompt cache keeps working (P3). For each message, \emph{relevant recall} adds the few memories that match the message---by embedding similarity when the embedding side service is running, by content-word overlap otherwise---within a fixed token budget and excluding those already in the profile. The prompt instructs the model to use a fact only when it helps with the current message and never to list memories back or mention having memory unless asked; memory should change the substance of an answer, not advertise itself.
+
+\subsection{The memory screen}
+
+Table~\ref{tab:memscreen} lists the controls. Two deserve comment. \emph{Memory on/off} stops using and saving memories without deleting them, for a user who wants a pause rather than a wipe. \emph{Temporary chat} is a per-chat switch, visible in the composer, under which the server neither reads nor writes memory and the chat is not saved to history---the local equivalent of a private browsing window.
+
+\begin{table}[t]
+\caption{Memory screen controls}
+\label{tab:memscreen}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{24mm}Y@{}}
+\toprule
+Control & Effect \\
+\midrule
+Memory list & Every saved memory, newest first, with category, date and origin (stated, learned, imported) and the chat it came from \\
+Search & Find a memory by words \\
+Edit & Fix a memory's wording in place \\
+Delete & Remove one memory---gone, not marked ``old'' \\
+Delete all & Clear everything, with confirmation \\
+Memory on/off & Stop using and saving without deleting \\
+Learn from chats on/off & Keep explicit commands; stop automatic extraction \\
+Temporary chat & One chat that neither reads nor writes memory and is not saved \\
+Export / import & JSON or Markdown \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Chat history}
+
+Every non-temporary chat is saved after each reply---so a crash loses at most the reply in flight---to \texttt{chats.db} with a title taken from the first real message, the model used and timestamps. A sidebar groups chats by day (Today, Yesterday, previous 7 and 30 days, then by month), supports full-text search with snippets, and offers pin, rename and delete; reopening a chat restores its messages. History is included in snapshots (\sect{sec:operations}). A later step lets the assistant search history itself on request (``what did we discuss about $X$?''), as a retrieval call made only for such questions.
+
+\subsection{Phases and status}
+
+\phase{MEM-1} (store, commands, profile block, screen), \phase{MEM-2} (automatic extraction, de-duplicate/replace, undo chip), \phase{MEM-3} (recall, budget, temporary chat, export/import) and \phase{MEM-4} (searchable chat history) are implemented in the prototype. \phase{MEM-5}---agent roles in the company reading the user's preferences, and project facts syncing to Hindsight---is planned.
+
+\subsection{Discussion}
+
+Two design choices are worth defending. Running extraction \emph{after} the reply rather than in a parallel service is not only a latency decision; it also bounds memory's cost to at most one small model call per exchange, which the user can switch off while keeping explicit commands. And keeping history out of the prompt while keeping facts in it reflects what the two are for: facts are the assistant's model of the person, history is the person's record of the assistant.

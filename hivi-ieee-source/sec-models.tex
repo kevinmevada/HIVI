@@ -1,0 +1,55 @@
+\section{Engines and Models}
+\label{sec:models}
+
+\subsection{Local engines}
+
+The chat model is served by one of two engines chosen per model. Five improvements to this layer are planned, all small (Table~\ref{tab:engines}). The most consequential is \emph{auto-benchmarked engine choice}: today the rule ``Colibr\`i for Qwen, \texttt{llama.cpp} otherwise'' is static; the first load of a model will instead run a short generation on both engines and remember the faster one, since relative speed depends on the model's architecture, quantisation and the driver, and changes with engine updates. MTP speculative decoding uses the multi-token-prediction heads some models ship~\cite{deepseekv3} to draft several tokens per step at no quality cost. An engine pin, real parameter counts read from GGUF metadata rather than file names, and a per-message thinking override expose controls the server already has.
+
+\begin{table}[t]
+\caption{Planned engine-layer improvements}
+\label{tab:engines}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{25mm}Y@{}}
+\toprule
+Feature & Design \\
+\midrule
+Auto-benchmark engine choice & First load of a model runs a short test on both engines and saves the faster one; re-run on engine update \\
+Engine pin & \texttt{/api/engine} exists; a llama / Colibr\`i / auto switch in the model picker \\
+Real parameter counts & Read from GGUF metadata rather than inferred from the file name \\
+MTP speculative decoding & \texttt{llama.cpp --spec-type draft-mtp} for models that ship MTP heads~\cite{deepseekv3} \\
+Thinking toggle & Manual per-message override (Auto / On / Off) of HAIE's adaptive thinking \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Cloud models through APIs}
+
+Local is the default (P1). Frontier cloud models are nonetheless valuable for the hardest tasks, as reviewers in the agent company, and for deep-research synthesis, so \hivi{} admits them---next to local models, never instead of them, and only where the user allows.
+
+\paragraph{Providers and adapter} Anthropic, OpenAI and Google are connected through their native APIs so that provider-specific features (prompt caching, extended thinking, tool use) are preserved; anything OpenAI-compatible (OpenRouter, Groq, Together, Mistral, DeepSeek, \dots) goes through one generic adapter configured by base URL and key. A gateway library such as LiteLLM can cover most of this. The adapter sits behind the existing \texttt{/v1} proxy, so the chat UI, streaming, images, tool calls, the canvas and the agent company work identically with local or cloud models. The model picker shows two groups, Local and Cloud, with a cost hint beside each cloud model. Keys live in the secrets vault (\sect{sec:security}) with a ``test key'' button, and never in configuration files, logs or prompts.
+
+\paragraph{When the cloud is used} Six modes, all opt-in (Table~\ref{tab:cloudmodes}). The one that matters most for a single-GPU assistant is \emph{ask to escalate}: when HAIE classifies a task as very hard, a local attempt fails its checks, or an agent-company gate keeps failing, \hivi{} asks ``This one is hard. Send it to Claude? About \$0.04'' and proceeds only on approval. \emph{Hybrid} modes---cloud plans and local executes, or local drafts and cloud reviews---give near-frontier quality at a fraction of the cost. Chats or projects marked local-only, and isolated projects (\sect{sec:knowledge}), never use the cloud.
+
+\begin{table}[t]
+\caption{When a cloud model may be used}
+\label{tab:cloudmodes}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{22mm}Y@{}}
+\toprule
+Mode & Behaviour \\
+\midrule
+Manual & The user picks a cloud model for a chat or a project \\
+Ask to escalate & HAIE sees a very hard task, a local attempt fails its checks, or an agent gate keeps failing: ask, with a cost estimate; proceed on approval \\
+Roles & Agent-company roles may be cloud models (e.g.\ planner and reviewer on Claude, workers local); likewise deep-research synthesis \\
+Hybrid & Cloud plans, local executes; or local drafts, cloud reviews \\
+Auto within budget (opt-in) & Allowed task types or projects use the cloud without asking until a budget is exhausted \\
+Never & Local-only chats and projects; isolated projects \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Privacy rules} The first cloud call in a chat shows exactly what will leave the machine: the message plus the context it needs. Permissions are per provider (chat only; files; memory; images). Only what is needed is sent---the relevant memories and file passages, never the whole memory or library. Vault values, keys and tokens are always redacted; emails, phone numbers and names optionally. Every cloud call is recorded in the activity log (\sect{sec:security}) with provider, model, tokens, cost and what was sent. Providers' retention terms differ; zero-retention options are preferred where offered.
+
+\paragraph{Cost and reliability} An estimate is shown before every escalation and a live token and cost counter on every cloud reply. Daily and monthly budgets per provider have a hard stop and a warning at 80\%; a usage dashboard breaks spend down by provider, model, project and day. Prompt caching, cheapest-capable-model-first selection and trimmed context reduce cost. A fallback chain---provider down, rate-limited or over budget $\rightarrow$ next provider $\rightarrow$ local---and the always-available local model mean \hivi{} keeps working offline.
+
+\paragraph{Phases} \phase{CLOUD-1}: keys in the vault, cloud models in the picker, streaming, cost counter, budgets, local-only lock, activity log entries. \phase{CLOUD-2}: tool calls, images and files to cloud models under permissions; redaction; fallback chain; usage dashboard. \phase{CLOUD-3}: ask-to-escalate from HAIE and from failed checks; cloud models in agent roles; hybrid plan/review. \phase{CLOUD-4}: auto-within-budget; the model scout (\sect{sec:autonomy}) compares local candidates with cloud models on the local exams to answer ``is local good enough yet?''.

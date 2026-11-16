@@ -1,0 +1,54 @@
+\section{The Security Base}
+\label{sec:security}
+
+\subsection{Why it comes before capability}
+
+Today the prototype has no login, and anything that can reach port 7860 can use it. That is acceptable while it only chats; it is not once it can run code, use the user's applications and act on their behalf. Skills, connectors, the agent company, phone control and calls (\sect{sec:capabilities}--\sect{sec:autonomy}) each would otherwise invent their own safety table. In \hivi{} they are instead \emph{settings of one system} (P5), so a rule changed once applies everywhere. The threat model is the one described for indirect prompt injection~\cite{greshake2023}: an assistant that holds private data, reads content from strangers (web pages, emails, files) and can send things out. \hivi{} will have all three.
+
+\subsection{The pieces}
+
+\paragraph{Network} \hivi{} listens only on the local machine. Remote access is only through a private overlay network (Tailscale, built on WireGuard~\cite{wireguard}; \sect{sec:autonomy}); no ports are opened on the router. The web UI is protected against cross-site requests.
+
+\paragraph{Login} A password stored as a slow hash, sessions that expire, and device approval: a new phone or browser must be approved from a device already trusted. Passkeys later.
+
+\paragraph{Secrets vault} API keys and tokens (bot, cloud backup, telephony, connectors) live in the operating system's credential store, never in configuration files, logs or prompts. A tool receives a secret when it runs; the model never sees its value.
+
+\paragraph{Encryption at rest} Full-disk encryption (BitLocker) covers everything with nothing to build. On top, memory, chat history and the vault are encrypted by \hivi{} with a key the OS protects, so a copied file is unreadable.
+
+\paragraph{One approval gate} Every action has a risk level (Table~\ref{tab:risk}). Skills, connectors, agents, jobs and calls all ask the same gate; the user answers in chat, on the phone, or by voice. ``Always allow this for this tool'' exists for the \emph{your files} and \emph{send} levels, with an expiry date, and is listed in one place where it can be revoked. The \emph{spend / system} level cannot be set to always-allow.
+
+\begin{table}[t]
+\caption{Risk levels and defaults}
+\label{tab:risk}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{17mm}YL{24mm}@{}}
+\toprule
+Level & Examples & Default \\
+\midrule
+Read & Search the web, read files in library folders, read calendar & Allowed \\
+Workspace & Write files inside \hivi{}'s workspace, generate images / audio & Allowed \\
+Sandbox & Run code in the sandbox & Allowed \\
+Your files & Change, overwrite or delete files outside the workspace & Ask \\
+Send & Send email or messages, post, submit forms, push code & Ask, showing exactly what will be sent \\
+Spend / system & Payments, install software, change system settings & Ask every time; cannot be always-allowed \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Activity log} Every action: who asked (user in chat, phone, routine, agent), what ran, what changed, the result. Append-only and chained with hashes so that edits are detectable. Filter, search, export.
+
+\paragraph{Sandbox} Untrusted code---new skills, agent builds, local connector servers---runs isolated: no access to personal files, network off unless needed, time and memory limits.
+
+\paragraph{Untrusted content rule} Text from web pages, files, emails and tool results is data, never instructions (P6). While such content is in the conversation, actions that send, delete or spend always need approval, even if previously allowed. This is the single most important rule in the system and is restated wherever content enters: web search, files, connectors, desktop screens.
+
+\paragraph{Supply chain} Packages pinned to exact versions from official indexes; vendored engines and connector servers checked by hash; new packages only with approval.
+
+\subsection{Security check}
+
+A ``\hivi{} doctor'' page checks the setup: login enabled, not reachable from the internet, disk encryption on, backups encrypted, no secrets in configuration files, packages pinned, nothing always-allowed that the user has forgotten. Each problem comes with a one-click fix or instructions.
+
+\subsection{Phases}
+
+\phase{SEC-1}: bind to the local machine only, activity log, one approval gate with risk levels, secrets vault, untrusted-content tagging---\emph{before} web search, files and connectors. \phase{SEC-2}: sandbox for running code (skills, local connector servers, agent builds)---before the code interpreter and skills. \phase{SEC-3}: login with device approval, sessions, cross-site protection, encryption at rest---before phone access. \phase{SEC-4}: passkeys, hash-chained log, the doctor page, spoken PIN for calls.
+
+The ordering is the point: each security phase is placed in the build order (\sect{sec:buildorder}) immediately before the first feature that would need it.

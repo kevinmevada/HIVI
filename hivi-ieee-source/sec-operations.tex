@@ -1,0 +1,63 @@
+\section{Operations: Health, Hardware Awareness, Quality and Backups}
+\label{sec:operations}
+
+\subsection{System health}
+
+The goal is to see at a glance whether \hivi{} is healthy---GPU, memory, models, speed, errors---and, once it runs unattended, to have it fix the common failures itself and report the rest.
+
+\paragraph{What is shown} Hardware: GPU load, VRAM used and free, temperature and power, CPU, RAM, free disk, from \texttt{nvidia-smi} queries and psutil (both already dependencies). Engines: which engine and model are loaded, resident models in router mode, context size, time since start, from the runtime state and the engine's model list. Speed: time to first token and generation tokens/s for every reply, per model, measured by the proxy on every request so that it works identically for both engines. Features: time spent in HAIE, memory recall, web search, file search, image and voice jobs, and error counts, from timers around each feature written to one log. Storage: sizes of memory, chat history, skills and the models folder; age of the last backup. Jobs, later: queue length, running jobs, failures.
+
+The prototype implements the hardware, engine and speed parts (\phase{HEALTH-1}) as a header chip (VRAM, temperature, tokens/s of the last reply, colour-coded by warning level) and a panel. Two implementation points matter for a single-GPU machine. First, probes are split into \emph{fast} (an \texttt{nvidia-smi} query, sampled at most every 1.5~s) and \emph{slow} (engine device enumeration, power-mode APIs, cached for a minute, refreshed in the background), and a request never waits for a slow probe or for a slow \texttt{nvidia-smi}---it is answered from the last reading, with its age, and the chip dims and reports ``not updating'' if readings stop. Second, the process table (which programs hold VRAM) is the slowest call and is refreshed on a side thread every few seconds rather than on every reading. Without these, readings froze under load and the panel appeared broken; the fix was entirely in \emph{when} things are measured, not what.
+
+\paragraph{Error log and speed history} One structured log (JSON lines) for every feature: time, feature, model, what failed, the error, and what \hivi{} did about it; a viewer with filters and a ``copy for bug report'' that bundles the error, settings and recent log lines without chat content; automatic rotation. Tokens/s and time to first token per model are stored per day, so slowdowns after an update, driver change or new model show with the date they started; the same numbers feed the exams, so a ``better'' model that is much slower on the user's hardware is flagged before a switch.
+
+\paragraph{Watchdog and auto-repair} For unattended running (Table~\ref{tab:watchdog}). Every action is written to the error log and the activity log.
+
+\begin{table}[t]
+\caption{Watchdog actions}
+\label{tab:watchdog}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{27mm}Y@{}}
+\toprule
+Problem & Action \\
+\midrule
+Engine crashed & Restart with the same model and settings; resume the running job \\
+Engine hung (no tokens for too long, health check fails) & Stop, restart, retry the request once \\
+Out of GPU memory & Reload with a smaller context or fewer GPU layers (adaptive, like the router's memory margin); log the change \\
+Restarted three times in ten minutes & Stop retrying, mark the model unhealthy, fall back to the other engine or a smaller model, notify the user \\
+GPU too hot & Pause background jobs until it cools; chat keeps working \\
+Disk almost full & Stop writing large outputs, clear caches, warn \\
+A feature keeps failing & Turn that feature off for now, say so in chat, keep everything else running \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Hardware awareness}
+
+When its hardware changes, \hivi{} notices, re-tunes itself, tells the user what it can do now, and never crashes because a setting no longer fits (P9). On every start it reads a hardware fingerprint---GPU model(s) and VRAM, number of GPUs, RAM, CPU, free disk, driver and CUDA version---and compares it with the last start. On an \emph{upgrade} (new GPU, second GPU, more RAM) it re-runs its speed tests, re-tunes context size, GPU layers, how many models stay loaded and the router's memory margin, checks which models now fit, on multi-GPU assigns jobs (chat on one card; voice, images and agent workers on the other), and tells the user in its own voice: ``New GPU: 24~GB. I re-tuned myself. Replies are about $3\times$ faster, and I can now run voice and chat at the same time. Thank you.'' On a \emph{downgrade} (back on the laptop, a GPU removed) it switches to a lighter set-up on its own---smaller context, fewer loaded models, heavy features scaled down---says what is limited for now, and never crashes on load. On a driver or engine update it runs a quick speed test and warns if it got slower. Settings are saved per machine, so moving between a laptop and a home server switches instantly; a hardware timeline records every change with its date, speed before and after, and what became possible; and the model scout then suggests models that only now fit.
+
+\paragraph{Phases} \phase{HEALTH-1} (status panel; implemented), \phase{HEALTH-2} (per-feature timings, error log with viewer, speed history), \phase{HEALTH-3} (watchdog, out-of-memory fallback, heat and disk guards, phone notifications); \phase{HW-1} (fingerprint, re-tune, lighter set-up on downgrade, upgrade/downgrade message), \phase{HW-2} (per-machine profiles, multi-GPU assignment, hardware timeline), \phase{HW-3} (scout suggests newly fitting models; exams re-run after every hardware change).
+
+\subsection{Quality: tests and the QA swarm}
+
+A one-person project has a polish gap. The plan closes it with a swarm of cloud agents (through their APIs) that continuously test, review and fix \hivi{}---the same way the agent company builds software---while the tests themselves run on the user's real hardware.
+
+\paragraph{The test foundation} Unit and integration tests (the existing pytest suite, extended to every section); end-to-end UI tests in which a browser robot (Playwright) uses the application as a user does---send, stream, stop, switch models, attach files, approve actions; GPU tests with real engines and tiny models on every change and real models nightly; a self-hosted test runner so every push runs on the user's PC or home server with a real GPU and real OS, not only in the cloud; and a crash and error reporter that turns repeated errors from the error log into issues automatically---error details only, never chat content.
+
+\paragraph{The swarm} A test writer that finds untested code and writes tests, section by section; a bug hunter for odd inputs, edge cases, fuzzing and cross-feature scenarios (voice mode plus an agent run plus a backup at once); a chaos tester that kills an engine mid-reply, fills the disk, drops the network, exhausts GPU memory, sleeps the laptop; a fixer that takes a confirmed bug to the smallest fix plus a proving test, as a pull request; a reviewer that reviews every change---the user's, the swarm's and \hivi{}'s own self-fixes---using a different model from the one that wrote it; and a release checker that runs the full regression before any model, engine or package update lands. The swarm runs through a coding-agent tool in headless mode in the repository, with keys from the vault.
+
+\paragraph{The loop and the rules} An issue (from the error reporter, a failing test or the bug hunter); reproduce first---a failing test is required, and without a reproduction there is no fix; fix on a separate branch; gates---the full suite on the GPU runner, end-to-end tests, review by a second model; the user merges (optionally, tiny fixes that pass every gate merge automatically with notification); close the issue, and the new test guards against regression. Agents work only through branches and pull requests, never on the main branch. Tests can be added, never deleted or weakened; the gate checks this. No personal data goes to the swarm: test data is synthetic; memory, chats and files stay home. Vault secrets are never shown to agents. Cost is controlled by running review and affected tests on every change but the deep runs only nightly; cheaper models write tests while frontier models review and take hard bugs; a monthly budget with a hard stop and a monthly report of bugs found, bugs fixed and cost. What it cannot replace: real-world use (the error reporter covers part), the user's taste in how things should feel, and hardware it has never seen.
+
+\paragraph{Phases} \phase{QA-1}: end-to-end UI tests, self-hosted runner, error reporter to issues. \phase{QA-2}: cloud swarm with the test writer nightly, the reviewer on every change, budget and report. \phase{QA-3}: bug hunter, chaos tests, fixer with pull requests, release checker. \phase{QA-4}: cross-feature scenario suites for every section; the swarm and \hivi{}-improves-\hivi{} share one issue queue and the same gates.
+
+\subsection{Backups and restore}
+
+Months of memory, skills and settings must not be lost to a dead disk, a bad update or a stolen laptop. Backups run on their own, are encrypted, and restoring is one step.
+
+\paragraph{What is backed up} Personal memory and chat history; the skills folder with versions and tests; settings, engine pins, router presets, HAIE settings; feedback and preference data; agent-company ledgers and blueprints; the job queue, routines and watchers; character adapters and voice references; connector settings, with secrets only inside the encrypted backup. Not backed up: models (re-downloadable; only the list of models, sources and file hashes is saved), caches (rebuilt on use), embedding indexes (rebuilt from the originals), and the user's own files in library folders, which are theirs to back up---\hivi{} stores only the folder list.
+
+\paragraph{How} Consistent copies: SQLite databases are copied with SQLite's online backup, not as raw files, so a backup taken mid-write is never corrupt. Encrypted, incremental, de-duplicated through a tool such as restic~\cite{restic}, with a key derived from the user's passphrase, so daily backups stay small. Destinations: an external drive by default, a second PC or NAS, or a cloud of the user's choice---data is encrypted before it leaves the machine. When: daily, and automatically before risky changes (an update, a model switch, a skill or workflow upgrade, a new adapter, any restore). Retention: 7 daily, 4 weekly and 6 monthly snapshots, adjustable. A recovery key shown once at set-up; without the passphrase or the key nobody can open the backups, including the user.
+
+\paragraph{Restoring and verifying} Everything onto a new PC: install, choose ``restore from backup'', enter the passphrase; memory, skills and settings are back and missing models are downloaded from the saved list. Just one thing: a deleted memory, an older skill version, settings only. A restore-points screen with every snapshot, its date and what changed, with preview. An automatic test restore once a month into a temporary folder with an integrity check; backup age on the health dashboard and a phone notification if the last good backup is older than a few days or the drive is missing; the Markdown memory export kept as a readable copy alongside.
+
+The prototype implements \phase{BAK-1}: a daily local snapshot (memory, chat history, feedback, settings and configuration; models never) to a folder or external drive of the user's choice, ``back up now'', keep-newest-$N$ retention, and one-click restore that first takes a safety snapshot of the current state. \phase{BAK-2}: encrypted incremental backups, cloud destinations, retention rules, recovery key, phone alert. \phase{BAK-3}: restore-points screen, single-item restore, monthly test restores, snapshots before every self-improvement upgrade.

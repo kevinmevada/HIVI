@@ -1,0 +1,59 @@
+\section{Knowledge Access: Web, Files and Projects}
+\label{sec:knowledge}
+
+Three features share one retrieval pipeline---chunk, embed, retrieve with keyword and vector search, rerank, cite, check citations---and differ in where the text comes from.
+
+\subsection{Web search, local-first}
+
+The goal is to search the public web and answer with clickable citations, with \emph{no third-party AI or search API seeing the queries}. Table~\ref{tab:search} gives the architecture. Search goes through a self-hosted SearXNG~\cite{searxng} metasearch instance on the user's machine, which queries the public engines anonymously from the user's own address with no accounts. Normal pages are read by a local fetcher with main-text extraction; JavaScript-heavy pages and PDFs by a local headless browser and PDF text extraction. Site-specific channels for YouTube, GitHub, Reddit and LinkedIn come from a vendored fork of Agent Reach~\cite{agentreach} (MIT) in which the web channel is rewritten to use SearXNG only and the local readers, the Exa and Jina dependencies are removed entirely, and the Chinese-platform channels are dropped. Passage selection and answer writing use the local embedding model, reranker and LLM; that data goes nowhere.
+
+\begin{table}[t]
+\caption{Web search architecture and where data goes}
+\label{tab:search}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{19mm}YL{22mm}@{}}
+\toprule
+Job & Tool & Data goes to \\
+\midrule
+Web search & SearXNG, self-hosted (Docker or Python), JSON API & Public engines, anonymously, from the user's IP \\
+Read normal pages & Local page reader (fetch + main-text extraction) & Only the website \\
+JS-heavy pages, PDFs & Local headless browser (Playwright), PDF text extraction & Only the website \\
+YouTube, GitHub, Reddit, LinkedIn & Agent Reach fork, site channels only & Only that site \\
+Pick passages, write answer & Local embedding + reranker + LLM & Nowhere \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Phase 1: quick search} (1) SearXNG set-up with and without Docker. (2) When to search: a toggle in the chat plus auto-detection by HAIE rules (a pasted link; ``latest'', ``today''; news, prices, versions). (3) The model writes one to three short queries, run in parallel. (4) The top four to six pages are read locally in parallel. (5) Pages are chunked; embedding and reranker keep only relevant passages, fitting an 8K--16K context. (6) The answer carries numbered citations and source cards (title, site, favicon). (7) \emph{Citation check}: each cited sentence is verified against its passage with the reranker; unsupported claims are fixed or flagged. (8) Live progress in chat (``Searching\dots\ Reading 6 pages\dots\ Checking citations\dots''). (9) A second round only if the sources do not cover the question, at most two. Target: 5--10~s of search and reading, then normal generation; non-web messages are unaffected.
+
+\paragraph{Phase 2: deep research} A deep mode that plans, searches, reads, asks ``what is missing or contradictory?'' and repeats for five to eight rounds over 20--40 pages, taking minutes; per-source notes and a final synthesis from the notes (map--reduce); question decomposition with several query variants per sub-question; SearXNG filters (time range, site-specific queries, scientific engines such as arXiv and Semantic Scholar); source-quality ranking that favours official documentation and primary sources and demotes SEO content, with user allow and block lists; thinking enabled for synthesis; a 32K context for the main model in deep mode only (about 1~GB more RAM and slower prompt processing); a SQLite search-and-page cache so follow-ups are instant; and remembering past research through project memory.
+
+\paragraph{Later} Real tool calling, where the model decides when to call \texttt{web\_search}, \texttt{read\_url}, \texttt{youtube\_transcript} and so on, is built \emph{after} the fixed pipeline works: both engines support tool calls, but small models misuse tools and each step is a full model pass. It is built with connectors (\sect{sec:capabilities}). Browser automation (clicking, forms, logged-in sites) is a separate opt-in tool, not part of search.
+
+\paragraph{Known limits} Weaker judgment than a frontier model on hard analysis and conflicting sources, which is a model-size limit; deep mode takes minutes on an 8~GB GPU; engines occasionally challenge SearXNG with a CAPTCHA, in which case it falls back to the other engines.
+
+\subsection{Chat with the user's own files}
+
+Drop a PDF, Word file, slides, spreadsheet, notes, code or a screenshot into the chat, or point \hivi{} at whole folders, and ask questions; answers cite the exact page, slide or line; everything stays on the machine.
+
+\paragraph{Two ways to use files} \emph{Attach to a chat} for one-off questions about a file at hand (drag and drop, paste, or the attach button), kept only for that chat unless the user says ``add this to my library''. \emph{Library folders}, added in settings, for collections the user returns to---notes, course material, papers, work documents, a book library---indexed and searchable from any chat and kept up to date.
+
+\paragraph{Reading each kind of file} PDFs: text with page numbers, tables kept as tables, scanned pages through OCR, a layout-aware reader (e.g.\ Docling) for complex documents. Word and PowerPoint: text, headings and tables; slides keep slide numbers and speaker notes. Excel and CSV: small sheets are shown to the model as tables; big ones are \emph{queried with code} (DuckDB or pandas) so that totals and averages are computed, never guessed. Text, Markdown, HTML and saved emails: read directly, split by headings. Code: split by function and class (tree-sitter), with file paths and line numbers. Images and screenshots: described and read by the vision projector; OCR for text-heavy images. Audio and video, later: transcribed with faster-whisper, the same speech-to-text as voice mode. Reader licences are checked when choosing libraries (PyMuPDF is AGPL; pypdf and pdfplumber are permissive).
+
+\paragraph{How answers are found} (1) A small file that fits the context budget goes in whole---better than searching. (2) Bigger files are split by page, heading or function and embedded locally. (3) Per question, keyword search and embedding search run together, so exact names, error codes and numbers are found and not only ``similar meaning''; the reranker keeps the best passages. (4) The answer cites like \texttt{[report.pdf, p.~12]} or \texttt{[app.py, lines 40--58]}, and a click opens the file at that spot. (5) The citation check from web search applies. (6) Whole-document jobs (``summarise this 200-page PDF'', ``compare these five contracts'') use the deep-research map--reduce: notes per part, then one summary.
+
+\paragraph{Keeping the library fresh and the user in control} A folder watcher re-indexes only files whose hash changed; deleted files leave the index. Ignored by default, and never indexed: \texttt{.git}, \texttt{node\_modules}, build folders, and secret files (\texttt{.env}, key files, password exports). Indexing runs when the GPU is idle (P2). A library screen shows folders, file counts, last indexed, per-folder on/off, re-index and remove. File content is not saved into memory unless asked; memory may store a pointer (``my thesis draft is in Documents/Thesis''). Content from files is untrusted data (P6): instructions inside a document are never followed.
+
+\paragraph{Phases} \phase{FILE-1}: attach files to a chat (PDF, Word, PowerPoint, Excel, text, code, images through vision); whole file or on-the-fly search; citations with page, slide or line. \phase{FILE-2}: library folders, indexing, keyword plus embedding search, reranker, folder watcher, library screen. \phase{FILE-3}: OCR for scans, layout-aware tables, spreadsheet questions answered with code, whole-document summaries, audio and video transcripts, and a shared code index for the agent company.
+
+\subsection{Projects}
+
+A project is a separate workspace for each thing the user works on (\hivi{} itself, a course, a job search), with its own instructions (``answer in exam format, all steps shown''; ``give PowerShell one-liners, not scripts''), files (project library folders, searched before anything else), chats grouped and searchable within it, project memory (facts learned inside the project, such as ``we chose SearXNG over Exa''), settings (default model, thinking, web search, allowed connectors and tools) and pinned decisions, links and files.
+
+\paragraph{Memory rules} Personal memory (who the user is) still applies inside projects. Project memory stays inside its project and never leaks into other projects or ordinary chats. An \emph{isolated} switch makes a project use only its own memory and instructions, for client work or anything private. The same controls apply as for personal memory.
+
+\paragraph{Context assembly} Stable parts first (P3): base prompt $\rightarrow$ user profile $\rightarrow$ project instructions; then per message: relevant project memories $\rightarrow$ relevant file passages $\rightarrow$ the chat. Each part has a token budget and the least relevant parts are cut first.
+
+\paragraph{Projects screen and ties} Create (blank or from a template), rename, archive, export and import a whole project, delete with confirmation (which also deletes its memory). ``Where did we leave off?'' gives a short summary of the project's latest chats and open items. An agent-company project is a \hivi{} project, with its ledger, blueprints and code index inside it; canvas documents and code-interpreter outputs are saved to the project; phone jobs can target a project; backups include every project.
+
+\paragraph{Phases} \phase{PROJ-1}: projects with instructions, grouped chats, project files, per-project settings. \phase{PROJ-2}: project memory with the isolation switch; agent projects become \hivi{} projects. \phase{PROJ-3}: templates, export/import, ``where did we leave off?'' summaries, archive.

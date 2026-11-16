@@ -1,0 +1,223 @@
+\section{The Agent Company: Software Work on One GPU}
+\label{sec:ide}
+
+\hivi{} IDE turns a request into tested, merged code through a company of local agents, and nothing reaches the user unless checks the user can see have passed. Models are assigned to roles by drag and drop. This section is the longest because the design has the most ways to go wrong, and because every rule in it answers a failure observed in agent ``companies'' or in the prototype's own ProjectRoom.
+
+\subsection{Goals, limits and what ``foolproof'' means}
+
+Correct over fast: every handoff is checked, mostly by running code. Fits the hardware: an 8~GB GPU, 32~GB RAM, local models only. Recoverable: a crash resumes from the last passed check. Visible: every agent's input, output and check result can be inspected. Configurable: roles are filled by drag and drop. Not in version 1: cloud models, multiple users, automatic deployment, browser automation.
+
+No loop can guarantee correct code; models make mistakes and specifications can be wrong. The design guarantees four things instead: (1) nothing reaches the user that failed a check; (2) every loop ends---it retries with new evidence, escalates, or asks the user, and never spins; (3) every failure goes back to the level that caused it; (4) a crash loses no finished work.
+
+\subsection{Ten principles}
+
+Most failures of agent companies come from breaking one of these.
+\begin{enumerate}
+\item \textbf{Execution beats opinion} (P4). Checks run code---tests, linter, type checker, the application itself; AI review is added on top, never instead.
+\item \textbf{Tests before code.} A different role writes the acceptance tests from the specification before any worker starts; workers cannot edit them.
+\item \textbf{Contracts before splitting.} Interfaces, file ownership and dependencies are fixed before work is handed down.
+\item \textbf{One source of truth.} Everything lives in the project ledger; agents receive context packed from it, never a summary of their boss's summary.
+\item \textbf{Structured output only.} Every agent answers in JSON matching a schema (engine-level JSON-schema decoding); anything else is rejected and retried.
+\item \textbf{Code checks what code can check.} Coverage, file ownership, dependency cycles and schema validity are checked by code, not judged by a model.
+\item \textbf{Every loop has a budget.} Attempts, time and tokens are capped at every level; the same failure twice means escalate, not retry.
+\item \textbf{Depth fits the task.} The boss picks how many levels a task needs.
+\item \textbf{Batch by model.} The scheduler finishes all work for one model before switching.
+\item \textbf{The user approves twice.} Once on the plan, once on the result.
+\end{enumerate}
+
+\subsection{Roles}
+
+Work moves down the hierarchy---boss, vice president, heads of department, workers---through a checker at every level; the pieces merge back together; anything that fails is sent back up to the level that owns it (Fig.~\ref{fig:company}). Two roles are added to the classic company: a \emph{test author} (QA head) who writes and locks the acceptance and contract tests before any worker starts, and a \emph{triage} role that decides which level owns a failure when the routing rules cannot. Every check that code can do is handed to code. Table~\ref{tab:roles} lists the roles, their inputs and outputs, and who checks them.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize, x=1mm, y=1mm,
+  role/.style={draw, rounded corners=2pt, align=center, minimum width=30mm, minimum height=6mm, inner sep=2pt, fill=white},
+  side/.style={draw, rounded corners=2pt, align=center, minimum width=17mm, minimum height=6mm, inner sep=2pt, fill=white},
+  chk/.style={draw, diamond, aspect=2.6, inner sep=0.3pt, fill=yellow!20, font=\tiny, align=center},
+  arr/.style={-{Latex[length=1.6mm]}, thick},
+  back/.style={-{Latex[length=1.6mm]}, thick, dashed, red!70!black},
+  busl/.style={thick, dashed, red!70!black},
+]
+\def\cx{-6}
+\node[role] (spec) at (\cx,112) {Spec (user)};
+\node[role] (boss) at (\cx,102) {Boss: plan};
+\node[chk]  (g1)   at (\cx,92)  {plan gate\\+ user};
+\node[role] (vp)   at (\cx,82)  {VP: split};
+\node[chk]  (g2)   at (\cx,72)  {split gate};
+\node[role] (head) at (\cx,62)  {Heads: contracts,\\task cards};
+\node[chk]  (g3)   at (\cx,50)  {stubs compile;\\tests fail on stubs};
+\node[role] (w)    at (\cx,38)  {Workers (parallel slots):\\one patch each};
+\node[chk]  (g4)   at (\cx,27)  {task gate\\(unit tests)};
+\node[role] (int)  at (\cx,16)  {Integrator: merge\\in dependency order};
+\node[chk]  (g5)   at (\cx,5)   {merge gate\\(contract tests)};
+\node[role] (fin)  at (\cx,-6)  {Final verifier\\(clean checkout, all tests)};
+\node[chk]  (g6)   at (\cx,-17) {final gate\\+ user};
+\node[side, left=3mm of head] (qa) {Test author:\\locked tests};
+\node[side, fill=red!8, minimum height=14mm] (tri) at (27,38) {Failure\\router\\+ triage};
+\foreach \a/\b in {spec/boss, boss/g1, g1/vp, vp/g2, g2/head, head/g3, g3/w, w/g4, g4/int, int/g5, g5/fin, fin/g6}
+  \draw[arr] (\a) -- (\b);
+\draw[arr] (head) -- (qa);
+\draw[arr] (qa.south) |- (g3.west);
+% failure bus on the right
+\draw[busl] (16,92) -- (16,-17);
+\foreach \g in {g1,g2,g3,g4,g5,g6}
+  \draw[busl] (\g.east) -- (16,0 |- \g.east);
+\draw[back] (16,38) -- (tri.west);
+\draw[back] (tri.north) |- (boss.east) node[pos=0.3, right, font=\tiny, align=left, xshift=-0.5mm] {to the\\owning\\level};
+\end{tikzpicture}
+\caption{The company at a glance: work moves down only through a passed gate; every failed gate (diamond) sends its evidence along the dashed bus to one failure router, which returns it to the level that owns it. The user approves at the plan gate and the final gate. The test author's tests are written and locked before any worker starts.}
+\label{fig:company}
+\end{figure}
+
+\begin{table*}[t]
+\caption{Roles in the agent company}
+\label{tab:roles}
+\centering\footnotesize
+\begin{tabularx}{\textwidth}{@{}L{30mm}L{14mm}L{14mm}YYL{26mm}@{}}
+\toprule
+Role & Kind & Model & Receives & Produces & Checked by \\
+\midrule
+Boss (planner) & AI & Heavy & Spec, repository map, memory & Plan with testable acceptance criteria; depth tier & Plan gate + user \\
+Boss's assistant, pass 1 (plan critic) & AI + code & Reviewer & Spec, plan & Findings with evidence & Rubric checks in code \\
+Vice president (splitter) & AI & Heavy & Plan & Departments, milestones, dependency graph & Split gate \\
+VP's assistant (split auditor) & Code + AI & Reviewer & Work breakdown & Coverage report & --- \\
+Head of department & AI & Heavy & Its slice, repository map & Contracts, task cards, file ownership & Stubs must compile and import \\
+Test author (QA head) & AI & Reviewer & Acceptance criteria, contracts & Acceptance and contract tests, then locked & Tests must fail on the stubs \\
+Worker & AI & Fast & One task card, its contracts, relevant code & A patch on its own branch & Task gate \\
+Department assistant (integrator) & Code + AI & Fast & Worker branches & Merged branch, test report & Merge gate \\
+Boss's assistant, pass 2 (final verifier) & Code + AI & Reviewer & Spec, plan, merged diff, all reports & Verdict with evidence & Final gate + user \\
+Triage & Code + AI & Heavy & Failure evidence & Which level owns the failure & Routing rules first \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+\paragraph{Models} \emph{Heavy} is the main model (a Qwen3-class 35B-A3B MoE). \emph{Fast} is a small coder that fits fully on the GPU (a 9B-class model). \emph{Reviewer} is a model from a different family (gpt-oss-20b~\cite{gptoss}) so that it does not share the maker's blind spots. All three are swappable by drag and drop. Services that are plain code, not agents: scheduler, model manager (router mode), sandbox runner, ledger, git workspace manager, context packer, and project memory.
+
+\subsection{Artifacts and the ledger}
+
+Every handoff is a typed, versioned record in the project ledger (SQLite plus files under \texttt{.hivi/} in the project), so that any agent's input can be rebuilt and any step replayed. Table~\ref{tab:artifacts} lists them with what validates each. The \emph{context packer} builds each role's prompt from the ledger in a fixed order within the role's token budget: role instructions, the specification excerpt, its own record, the contracts it uses, the relevant code (found with the embedding model and reranker), and finally the last failure's evidence. Stable parts come first (P3) so the engine reuses its prompt cache, and the whole prompt fits an 8K--16K context.
+
+\begin{table}[t]
+\caption{Artifacts in the project ledger}
+\label{tab:artifacts}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{17mm}L{16mm}YL{22mm}@{}}
+\toprule
+Artifact & Written by & Must contain & Validated by \\
+\midrule
+Spec & User + clarifier & Goal, constraints, out of scope, examples & User approval \\
+Plan & Boss & Milestones; acceptance criteria each with a command and expected result; risks; tier & Plan gate \\
+Work breakdown & VP & Departments, milestones per department, dependency graph & Every plan item owned exactly once; no cycles \\
+Contract & Head & Signatures and types, API schemas, file ownership & Stubs compile and import; no file owned twice \\
+Test suite & Test author & Acceptance and contract tests & Fail on stubs first; locked by hash after approval \\
+Task card & Head & Goal, files owned, contracts used, tests to pass, budget & Schema \\
+Patch & Worker & A diff on its own branch & Applies cleanly; touches only owned files \\
+Test report & Sandbox & Command, exit code, failures, log & Produced by code, never by a model \\
+Review & Critic or verifier & Findings, each citing a file and line or a test & Rejected if a finding cites no evidence \\
+Decision log & Any level & What changed and why & Append-only \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{The main loop}
+
+The loop is a chain of seven steps and five gates with one failure router: work moves down only through a passed gate, and every failed gate sends its evidence to the router. The user approves at two gates (plan and final); the other three are checked by code first, with an AI review on top where code cannot judge.
+
+\subsection{Failure routing and budgets}
+
+A failure goes back to the level that owns it, decided first by \emph{which gate failed} and only then, if the rules cannot tell, by AI triage (Table~\ref{tab:routing}). Default budgets, editable per run: a worker gets three attempts per task; a head two contract revisions per department; the vice president one re-split per milestone; the boss one re-plan per milestone; the whole run has time and token limits set when the user approves the plan. When the top budget runs out, \hivi{} stops and reports what passed, what failed, and the evidence.
+
+\begin{table}[t]
+\caption{Failure routing}
+\label{tab:routing}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}YL{15mm}Y@{}}
+\toprule
+What failed & Owner & What happens \\
+\midrule
+A task's unit tests & Worker & Retry with the error output, up to the worker budget \\
+The same error twice in a row & --- & No more retries at that level; escalate one level \\
+A patch touches files it does not own & Worker & Rejected without running; retry \\
+Workers' branches conflict & Head & Ownership was wrong: fix the contract, re-issue only the affected tasks \\
+Contract tests fail after the merge & Head & Revise the contract, re-run dependent tasks \\
+Acceptance tests fail while every department passes & VP & The split missed something: re-split that milestone \\
+A criterion cannot be tested or contradicts the spec & Boss & Re-plan that milestone \\
+The spec is ambiguous & User & One question; only that branch pauses \\
+A worker claims a test is wrong & Test author & Reviewed with evidence; a locked test changes only with the user's approval \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Three rules stop spinning. \emph{A retry must change its input}: new error output or new context; an identical prompt is never sent twice. \emph{Stall detection}: each failure gets a signature (failing test plus error type) and a repeated signature escalates at once. \emph{Oscillation detection}: if fixing $A$ breaks $B$ and fixing $B$ breaks $A$, the alternating failure sets are recognised and the head re-plans both tasks together. \emph{Recovery}: a checkpoint is saved after every gate (the LangGraph SQLite checkpointer already used in the ProjectRoom), and after a crash the run resumes from the last passed gate.
+
+\subsection{Every known problem and its fix}
+
+Table~\ref{tab:problems} is the design's own checklist: each row is a failure mode observed in agent systems or in the prototype, paired with the mechanism that addresses it. We include it in full because the mapping from problem to mechanism is the substance of the design.
+
+\begin{table}[t]
+\caption{Known problems of agent companies and the corresponding mechanism}
+\label{tab:problems}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{27mm}Y@{}}
+\toprule
+Problem & Mechanism \\
+\midrule
+One GPU, many agents & Two or three shared models; work runs in phases; workers share parallel slots of the fast model \\
+Model swaps take 20--30~s & Batch by model; router mode keeps the fast model loaded \\
+Details lost down the chain & Ledger and context packer; no agent receives a summary of a summary \\
+An assistant re-reading with the same blind spots & Checks run code; the reviewer is a different model family; tests are written by another role before the code \\
+Workers' pieces do not fit & Contracts and file ownership fixed before splitting; one branch per worker; merges in dependency order \\
+Workers gaming the tests & Tests locked by hash; test files off limits to workers; the final check re-runs everything from a clean checkout \\
+Endless loops & Budgets per level; stall and oscillation detection; escalation ends with the user \\
+A plan that sounds right but is wrong & Every criterion must be testable; plan critic; the user's approval \\
+Seven layers for a one-line fix & Depth tiers \\
+Made-up APIs or packages & Repository search and documentation lookup; imports checked; packages installed only from the lockfile \\
+Context overflow & Token budget per role; retrieval picks only relevant code \\
+Malformed agent output & JSON-schema decoding; reject and retry \\
+Flaky tests & A failure is re-run twice before anyone is blamed; flaky tests are marked \\
+Unsafe generated code & Sandbox: project folder only, no network by default, time and memory limits \\
+Crash mid-run & Checkpoint per gate; resume \\
+Quality drifting unnoticed & Pass rate and retries tracked per role and shown in the UI \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Depth tiers}
+
+The boss sizes each request and uses only the levels it needs; the gates are the same at every tier. \emph{T0 Answer}: a question, no code change---one model, normal chat. \emph{T1 Fix}: a clear change to one or two files---worker, test author, final verifier. \emph{T2 Feature}: several files in one area---head, test author, workers, integrator, final verifier. \emph{T3 Project}: several areas or a new application---the full company. The boss estimates from the plan (areas touched, files touched, open unknowns); a run moves up a tier when a split outgrows it, and the user can force a tier.
+
+\subsection{Running it on one 8~GB GPU}
+
+All roles share two or three models and the scheduler runs work in phases so the GPU switches models only between phases: (1) a planning phase on the heavy model (boss, vice president, heads, triage); (2) a review phase on the reviewer model (plan critic, split auditor, test author); (3) a build phase on the fast model, with workers running side by side in \texttt{llama.cpp} parallel slots (each slot gets an equal share of the context); (4) a check phase, code first (sandbox tests, lint, type checks), then the reviewer model for the final review. A failure that goes back up waits for the next phase of its model rather than forcing a swap, unless it blocks everything else. Router mode keeps the fast model loaded between phases when RAM allows while the heavy model swaps in and out. Role instructions never change during a run and the packer puts them first, so the cached prefix is reused. Each model keeps its usual engine rule; parallel worker slots need \texttt{llama.cpp}. The number of slots trades total throughput against per-worker speed and is chosen by measuring on the benchmark suite, not by guessing.
+
+\subsection{Model assignment and the live UI}
+
+The UI is the organisation chart itself. An \emph{org-chart editor}: each role is a node; drag a model card onto it; \hivi{} warns when a model cannot do the job (too little context, no JSON-schema support, too large to share the GPU); saving writes the role configuration file that already exists. A \emph{live run view}: every node shows its state---idle, working, checking, failed, escalated---and a click shows its packed input, its output and its gate results. A \emph{plan approval screen} to read and edit the plan and its acceptance criteria before anything runs. A \emph{workspace}: editor, a diff per worker branch, test reports, the merge view, and a ledger timeline that can be replayed step by step. \emph{Budget meters}: attempts and time used at each level, so a struggling run is visible before it escalates.
+
+\subsection{Build phases and proof}
+
+The company is built from the bottom up, and a phase moves on only when the benchmark suite shows the current one works (Table~\ref{tab:idephases}). The proof is a local suite of about thirty tasks across the tiers---bug fixes, small features, small applications---each with hidden acceptance tests the agents never see, in the manner of SWE-bench~\cite{swebench} at personal scale. Every phase is measured on tasks fully passed on the first run, escalations to the user, retries per level, and wall-clock time per task; a phase ships only if it beats the previous one on that suite.
+
+\begin{table}[t]
+\caption{Build phases of the agent company and their exit tests}
+\label{tab:idephases}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}L{16mm}YL{24mm}@{}}
+\toprule
+Phase & What & Exit test \\
+\midrule
+\phase{IDE-1} Foundations & Artifact schemas, ledger, sandbox runner, context packer, budgets & Unit tests for each service \\
+\phase{IDE-2} T1 loop & Worker + locked tests + final verifier, grown from the ProjectRoom (today: one calculator task) & Beats single-shot on the benchmark suite \\
+\phase{IDE-3} T2 & Heads with contracts, test author, parallel workers, integrator with git branches & Beats \phase{IDE-2} on multi-file tasks \\
+\phase{IDE-4} T3 & Boss, vice president, critics, failure router, triage & Beats \phase{IDE-3} on project-size tasks \\
+\phase{IDE-5} UI & Org-chart editor, live run view, plan approval, workspace, budget meters & A full run driven from the UI \\
+\phase{IDE-6} Learning & Project memory of failures and fixes per role, fed back through the packer & Fewer retries per level over time \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Builds on what exists, and prior art}
+
+The role-to-model mapping and automatic swaps (\texttt{model\_roles.yaml}, the model router), the LangGraph generate--test--retry loop with a deterministic test gate and SQLite checkpoints (ProjectRoom), and \texttt{llama.cpp} router mode are the existing pieces the company grows from. MetaGPT~\cite{metagpt} and ChatDev~\cite{chatdev} showed that an LLM ``software company'' works for small applications and that verification and integration are its weak points; the gates, contracts, locked tests and failure routing above are aimed precisely there.

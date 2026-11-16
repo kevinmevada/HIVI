@@ -1,0 +1,71 @@
+\section{Build Order and Dependencies}
+\label{sec:buildorder}
+
+The sections above describe some two dozen areas, each with several phases. The order in which they are built is itself a design decision. Two rules fix it: \emph{finish one stage before starting the next}, and \emph{every stage ends with something the user uses every day}. A third rule, already visible in \sect{sec:security}, places each security phase immediately before the first feature that would need it. Table~\ref{tab:stages} gives the nine stages; Fig.~\ref{fig:deps} gives the dependency graph that produced them.
+
+\begin{table*}[t]
+\caption{Build order: nine stages}
+\label{tab:stages}
+\centering\footnotesize
+\begin{tabularx}{\textwidth}{@{}cL{28mm}YY@{}}
+\toprule
+Stage & Theme & Phases & Why at this point \\
+\midrule
+1 & Quick wins (days) & Engine pin, real parameter counts, thinking toggle, MTP decoding (\sect{sec:models}); personality and user name (\sect{sec:soul}); \phase{HEALTH-1} status panel, \phase{HW-1} hardware awareness (\sect{sec:operations}); \phase{QA-1} test foundation & Small, low-risk, improves daily use at once. \phase{HEALTH-1} is implemented. \\
+2 & She knows you & \phase{MEM-1}--\phase{MEM-3} (and \phase{MEM-4}); \phase{SOUL-1}, \phase{SOUL-2}; \phase{BAK-1} & Memory and mood awareness are what every later feature (voice, phone, calls) relies on; backups start the day there is memory worth losing. Implemented. \\
+3 & She can look things up & \phase{SEC-1}; \phase{CLOUD-1}; \phase{QA-2}; search phase 1 (1.1--1.9); \phase{FILE-1}, \phase{FILE-2}; \phase{PROJ-1} & Security base first: from here on \hivi{} reads untrusted content. Skills, deep research and self-improvement all need search; files reuse the same pipeline; projects group chats, files and instructions; cloud keys need the vault. \\
+4 & She can make things & \phase{SEC-2} sandbox; \phase{CLOUD-2}; \phase{SKILL-1}, \phase{SKILL-2}; \phase{CODE-1}, \phase{CODE-2}; \phase{CANVAS-1}, \phase{CANVAS-2}; \phase{MCP-1}, \phase{MCP-2}; \phase{IMG-1}, \phase{IMG-2}; \phase{VOX-1}, \phase{VOX-2} & Sandbox before running skill code; the skills format first so images and voice ship as skills; the code interpreter and canvas reuse the sandbox; connectors give her hands. The biggest stage---split if it drags. \\
+5 & She can talk & \phase{TALK-1}--\phase{TALK-3}; \phase{VOX-3}; \phase{PRES-2} & Needs speech-to-text and voices from stage 4. \\
+6 & She builds software & \phase{UP-1} exams; \phase{IDE-1}--\phase{IDE-5}; \phase{MCP-3}; \phase{HEALTH-2}; \phase{PROJ-2}; \phase{CLOUD-3}; \phase{QA-3} & The biggest build; the exams double as the benchmark; timings and error logs make long runs debuggable. \\
+7 & She works while you're away & \phase{SEC-3} login and encryption first; \phase{HEALTH-3} watchdog; \phase{BAK-2}; \phase{LIVE-1}--\phase{LIVE-5}; \phase{MCP-4}; \phase{NIGHT-1}; \phase{HW-2} & Login before the phone can reach her; watchdog and backups before she runs unattended; then agent runs, images and research become background jobs started from the phone. \\
+8 & She learns and improves & \phase{SKILL-3}--\phase{SKILL-5}; search phase 2; \phase{SOUL-3}, \phase{SOUL-4}; \phase{MEM-5}; \phase{IDE-6}; \phase{UP-2}--\phase{UP-6}; \phase{IMG-3}, \phase{IMG-4}; \phase{FILE-3}; \phase{MCP-5}; \phase{BAK-3}; \phase{PROJ-3}; \phase{CODE-3}; \phase{CANVAS-3}; \phase{NIGHT-2}; \phase{SELF-1}, \phase{SELF-2}; \phase{DESK-1}, \phase{DESK-2}; \phase{CLOUD-4}; \phase{HW-3}; \phase{QA-4} & Needs search, skills, exams and background jobs all in place. \\
+9 & She calls you (final) & \phase{CALL-1}--\phase{CALL-5}; \phase{LIVE-6}; \phase{SOUL-5}; \phase{TALK-4}; \phase{SEC-4}; \phase{SELF-3}; \phase{DESK-3}; \phase{PRES-3} & Builds on voice mode, phone control and everything before it. \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize, x=1mm, y=1mm,
+  n/.style={draw, rounded corners=2pt, align=center, inner sep=2.5pt, minimum height=6mm, minimum width=24mm, fill=white},
+  arr/.style={-{Latex[length=1.6mm]}, semithick, gray!60!black, rounded corners=2pt},
+]
+% layer 1
+\node[n] (sec)    at (0,30)  {Security base};
+\node[n] (mem)    at (0,18)  {Memory};
+\node[n] (health) at (0,6)   {Health + watchdog};
+\node[n] (bak)    at (0,-6)  {Backups};
+% layer 2
+\node[n] (search) at (36,30) {Web search};
+\node[n] (sand)   at (36,18) {Sandbox};
+\node[n] (exams)  at (36,6)  {Exams};
+\node[n] (live)   at (36,-6) {Job queue + phone};
+% layer 3
+\node[n] (files)  at (72,36) {Your files};
+\node[n] (skills) at (72,24) {Skills};
+\node[n] (code)   at (72,12) {Code interp.\ + canvas};
+\node[n] (mcp)    at (72,0)  {Connectors};
+\node[n] (vox)    at (72,-12){STT + voices};
+% layer 4
+\node[n] (proj)   at (108,36){Projects};
+\node[n] (soul)   at (108,24){Understanding you};
+\node[n] (ide)    at (108,12){Agent company};
+\node[n] (talk)   at (108,0) {Voice mode};
+\node[n] (night)  at (108,-12){Night shift};
+% layer 5
+\node[n] (self)   at (144,18){Self-improvement};
+\node[n] (calls)  at (144,0) {Calls};
+\foreach \a/\b in {sec/search, sec/sand, sec/live, mem/soul, mem/proj, health/live, bak/live, health/night, bak/night,
+  search/files, search/skills, sand/code, sand/skills, exams/ide, live/night, live/calls,
+  files/proj, files/ide, skills/vox, skills/ide, code/ide, mcp/ide, vox/talk, mem/talk,
+  talk/calls, ide/self, exams/self, search/self, night/self, soul/calls, sec/mcp}
+  \draw[arr] (\a.east) -- (\b.west);
+\end{tikzpicture}
+\caption{Dependencies at a glance, read left to right (an arrow means ``is needed by''). The security base feeds every feature that reads untrusted content or acts; memory feeds understanding, voice mode and calls; the search pipeline feeds files, skills and self-improvement; exams feed the agent company and all upgrades; the job queue with the watchdog and backups feeds unattended running.}
+\label{fig:deps}
+\end{figure*}
+
+\paragraph{Dependencies in words} Memory is needed by understanding the user, voice mode and calls. Web search is needed by skills, deep research and self-improvement. Skills are needed by images, voice and agent workers. Speech-to-text and voices are needed by voice mode, which is needed by calls. Exams are needed by the agent-company benchmark, which is needed by model, skill and workflow upgrades. The job queue and login are needed by phone control, which is needed by calls. The security base is needed by skills, connectors, the agent company, phone control and calls. Watchdog and backups are needed by unattended running. The search pipeline is needed by files, which are needed by the psychology library and the agent company's code index. Connectors are needed by agent tools and by phone jobs on calendar and email. The sandbox is needed by the code interpreter, which is needed by the code canvas and spreadsheet questions. Memory and files are needed by projects, which are needed by agent projects. The job queue, watchdog and backups are needed by night shift. The agent company, exams, backups and the security base are needed by \hivi{}-improves-\hivi{}. The security base and vision are needed by desktop control. The secrets vault is needed by cloud models, which are needed by escalation, cloud agent roles and the QA swarm. Hardware awareness means every feature gets settings that fit the machine it is on.
+
+\paragraph{Status} Stages 1 and 2 are implemented in the prototype except for the engine-layer items and \phase{QA-1}; the ``animated presence'' phases (\phase{PRES-1} in stage 1, a living visual in the header showing idle, listening, thinking, working, speaking and needs-you states) were dropped from the plan in favour of the brand's static mark and a splash animation, and \phase{PRES-2}/\phase{PRES-3} remain optional.
