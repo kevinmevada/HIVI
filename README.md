@@ -35,6 +35,11 @@ consistent.
 | Vision | registry + runtime + UI | Models with an `mmproj*.gguf` beside them load in llama.cpp with `--mmproj`; the UI's **Image** button sends pictures |
 | Memory gateway | `:7860/memory/v1` | Hindsight's LLM endpoint; waits out model switches instead of failing |
 | Memory core | `src/hivi/memory/` | Ledger-first retain, retry queue, per-project banks, corrections/supersession |
+| Personal memory | `interfaces/hivi-chat/personal_memory.py` + `memory_engine.py` | Local SQLite memory for facts, preferences, corrections, automatic extraction, recall, undo, temporary chats, and import/export |
+| Chat history | `interfaces/hivi-chat/chat_history.py` | Saves chats to `data/memory/chats.db`; sidebar supports day groups, full-text search, pin, rename, delete, and `Ctrl+Shift+H` |
+| HIVI personality | `interfaces/hivi-chat/soul.py` | Rule-based mood-aware tone, loyalty/character rules, and thumbs-up/down feedback with rewrite suggestions |
+| Health and performance | `gpu_doctor.py` + server health endpoints | Live GPU, RAM, CPU, disk, model, warning, and last-reply speed details in the UI health chip |
+| Local backups | `interfaces/hivi-chat/backups.py` | Automatic daily snapshots plus manual backup, retention, readable exports, and one-click restore with a safety snapshot |
 | ProjectRoom | `src/hivi/orchestrator/project_room.py` | LLM writes `calculator.py` from spec + recalled memory → subprocess tests → retry with failure feedback |
 
 Not built yet: agent workforce, project/task database, security layer, supervisor.
@@ -86,6 +91,28 @@ coding, architecture, math, research, explanation, writing, brainstorming,
 greetings and chat, and carries short follow-ups such as "make it async" from
 the previous user request. Set `HIVI_HAIE_SEMANTIC=1` when you prefer the
 optional semantic LLM classifier for ambiguous prompts.
+
+### Personal memory, history, and backups
+
+The chat UI's gear button opens **Memory & settings**. Personal memories and
+chat history stay on this PC under `data/memory/` by default:
+
+- HIVI can learn durable facts and preferences after replies, recall relevant
+  memories in later chats, and show an undo chip when it updates memory.
+- Use a temporary chat when a conversation should neither read nor write
+  personal memory.
+- Manage, edit, delete, import, or export memories from the Memory screen.
+- Open chat history with the sidebar button or `Ctrl+Shift+H`; search, pin,
+  rename, and delete saved conversations.
+- The **You & HIVI** tab controls the local profile, personality, mood behavior,
+  and response feedback. Feedback can be exported for later tuning.
+- The **Backups** tab supports manual snapshots, retention, a custom backup
+  folder (including a USB drive), and restore. Models are never copied into
+  backups because they are re-downloadable.
+
+Automatic snapshots include memory, feedback, settings, configs, HAIE data,
+and readable `memory.md` exports. The default backup location is
+`data/backups/`.
 
 ## Run
 
