@@ -4,166 +4,161 @@
   <img src="interfaces/hivi-chat/static/brand/bunny.png" width="72" alt="HIVI bunny mark">
   <br>
   <strong>H I V I</strong>
-  <br>
-  <sub>Local intelligence · memory · execution</sub>
 </p>
 
-Local AI workbench for an 8 GB-VRAM laptop: a portable model library, a chat
-UI that runs GGUF models on Colibrì or llama.cpp, and a project memory layer
-(Hindsight + SQLite ledger + LangGraph) that survives restarts.
+**A local-first AI workbench for Windows.** HIVI runs GGUF models on
+[llama.cpp](https://github.com/ggml-org/llama.cpp) or
+[Colibrì](https://github.com/JustVugg/colibri) on a single 8 GB-VRAM laptop,
+and adds a chat UI, persistent on-device memory, and one OpenAI-compatible
+endpoint that other tools can call. Nothing leaves your machine.
 
-Current status and planned work live in [`docs/FUTURE_FEATURES.md`](docs/FUTURE_FEATURES.md).
-The project's design vision is also available as the
-[`HIVI Vision IEEE paper`](HIVI_Vision_Paper_IEEE.pdf), with editable LaTeX
-sources in [`hivi-ieee-source/`](hivi-ieee-source/).
+> **Status: working prototype.** The chat server, memory, routing, vision,
+> image generation and desktop launcher are implemented and tested. The
+> multi-agent "workforce" described in the design paper is **not** built yet
+> (see [Not built yet](#not-built-yet)). Development and testing so far has been on
+> one machine: Windows 11, RTX 5060 Laptop (8 GB VRAM), 32 GB RAM.
 
-## Brand
-
-HIVI's interface uses a clean system sans-serif stack: **SF Pro Display /
-Inter / Segoe UI Variable Display / Segoe UI** for headings and the matching
-text stack for body copy. The bunny is HIVI's primary symbol; the wordmark is
-set in a bold display face with a warm-to-violet spectrum wave and soft glow.
-Use the existing assets in
-[`interfaces/hivi-chat/static/brand/`](interfaces/hivi-chat/static/brand)
-when extending the UI so the symbol, typography, and color treatment stay
-consistent.
-
-## What runs today
+## What it does today
 
 | Piece | Where | What it does |
 |-------|-------|--------------|
-| Chat control server | `interfaces/hivi-chat/server.py` | Model picker, starts/stops one backend on `:8080`, OpenAI-compatible proxy on `:7860/v1` |
-| HAIE planner | `interfaces/hivi-chat/haie/` | Per-message intent → sampling params using fast rules by default; optional LLM classification for ambiguous requests |
-| A1 router | `interfaces/hivi-chat/routing/` | Suggests a better-suited model for a prompt (UI shows a "Switch" hint) |
-| Vision | registry + runtime + UI | Models with an `mmproj*.gguf` beside them load in llama.cpp with `--mmproj`; the UI's **Image** button sends pictures |
-| Memory gateway | `:7860/memory/v1` | Hindsight's LLM endpoint; waits out model switches instead of failing |
-| Memory core | `src/hivi/memory/` | Ledger-first retain, retry queue, per-project banks, corrections/supersession |
-| Personal memory | `interfaces/hivi-chat/personal_memory.py` + `memory_engine.py` | Local SQLite memory for facts, preferences, corrections, automatic extraction, recall, undo, temporary chats, and import/export |
-| Chat history | `interfaces/hivi-chat/chat_history.py` | Saves chats to `data/memory/chats.db`; sidebar supports day groups, full-text search, pin, rename, delete, and `Ctrl+Shift+H` |
-| HIVI personality | `interfaces/hivi-chat/soul.py` | Rule-based mood-aware tone, loyalty/character rules, and thumbs-up/down feedback with rewrite suggestions |
-| Health and performance | `gpu_doctor.py` + server health endpoints | Live GPU, RAM, CPU, disk, model, warning, and last-reply speed details in the UI health chip |
-| Local backups | `interfaces/hivi-chat/backups.py` | Automatic daily snapshots plus manual backup, retention, readable exports, and one-click restore with a safety snapshot |
-| ProjectRoom | `src/hivi/orchestrator/project_room.py` | LLM writes `calculator.py` from spec + recalled memory → subprocess tests → retry with failure feedback |
+| Chat control server | `interfaces/hivi-chat/server.py` | Model picker; starts and stops one inference backend on `:8080`; serves the UI and an OpenAI-compatible proxy at `:7860/v1`. |
+| Engine selection | `interfaces/hivi-chat/registry.py` | Scans the model folder and picks an engine per file: Colibrì for Qwen3-family text models, llama.cpp for GPT-OSS, Gemma, vision, embedding and reranker models. Falls back to llama.cpp if Colibrì cannot load a file. |
+| Model roles | `configs/model_roles.yaml`, `model_router.py` | Callers set `model` to a role or alias (e.g. `main-chef`, `hivi-heavy`); HIVI waits for in-flight requests, swaps models, then answers. See [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md). |
+| HAIE planner | `interfaces/hivi-chat/haie/` | Classifies each message (coding, math, research, writing, chat...) with local rules and sets sampling parameters. An optional LLM classifier is off by default. |
+| Prompt router | `interfaces/hivi-chat/routing/` | Suggests a better-suited installed model; the UI shows a Switch / Dismiss hint and never switches on its own. |
+| Vision | registry + runtime + UI | A model with an `mmproj*.gguf` beside it loads in llama.cpp with `--mmproj`; the **Image** button is enabled only for those models. |
+| Image generation | `interfaces/hivi-chat/image_gen.py` | Local text-to-image through stable-diffusion.cpp (`sd-cli`). Unloads the chat model for the render and reloads it after. |
+| Retrieval services | `interfaces/hivi-chat/aux_services.py` | Embedding (`:8081`) and reranker (`:8082`) `llama-server` side services, started on demand and stopped when idle. |
+| Personal memory | `personal_memory.py`, `memory_engine.py` | Local SQLite memory: remember/forget (English and Hinglish), automatic learning after replies, recall in later chats, undo, temporary chats, import/export. |
+| Chat history | `chat_history.py` | Chats saved to `data/memory/chats.db`; full-text search, pin, rename, delete, `Ctrl+Shift+H`. |
+| Personality | `soul.py` | Rule-based mood reading that shapes tone only (not stored), plus thumbs-up/down feedback exported as JSONL. |
+| Health and backups | `gpu_doctor.py`, `backups.py` | Live GPU/RAM/CPU/disk status in the UI; daily snapshots, manual backup, retention, one-click restore. Models are not included in backups. |
+| Project memory | `src/hivi/memory/` | Ledger-first retain with a retry queue, per-project banks, and correction/supersession, backed by a [Hindsight](#hindsight-optional) server. |
+| ProjectRoom | `src/hivi/orchestrator/project_room.py` | A LangGraph proof of concept: the model writes `calculator.py` from a fixed spec plus recalled memory, a subprocess test gates it, and failures are fed back for up to 3 attempts. |
+| Desktop launcher | `interfaces/hivi-desktop/hivi_app.py` | Native window (pywebview + WebView2) that reuses or starts the server and stops only what it started. |
 
-Not built yet: agent workforce, project/task database, security layer, supervisor.
+### Not built yet
 
-## Layout
+Agent workforce and supervisor, project/task database, and a security layer.
+The role table in `model_roles.yaml` exists as configuration only; no agents run
+from it. ProjectRoom executes generated code in a separate interpreter with a
+timeout, which is **not a sandbox**. Plans are tracked in
+[`docs/FUTURE_FEATURES.md`](docs/FUTURE_FEATURES.md).
 
-```
-HIVI/
-├── configs/                 # storage.yaml sets models_root / data_root
-├── docs/                    # audit, milestones, BACKENDS.md
-├── interfaces/hivi-desktop/ # single-window desktop launcher
-├── interfaces/hivi-chat/    # control server, UI, HAIE, router
-├── scripts/                 # bootstrap, benchmarks, fetch_backends.ps1, launchers
-├── src/hivi/
-│   ├── paths.py             # every filesystem location (env-overridable)
-│   ├── memory/              # Hindsight provider, governance, queue
-│   ├── orchestrator/        # LangGraph graphs, ProjectRoom
-│   ├── storage/             # SQLite ledger
-│   └── inference/           # engines are fetched here, not committed
-└── tests/
-```
+## Requirements
+
+- Windows 10/11 (launch scripts are PowerShell; the desktop window uses WebView2)
+- Python 3.11+ and [uv](https://docs.astral.sh/uv/)
+- Google Chrome, if you launch with `scripts/hivi_ui.ps1`
+- GGUF models of your own, placed under `Models/` (or wherever `HIVI_MODELS_ROOT` points)
+- A CUDA-capable GPU is strongly recommended; the project targets 8 GB VRAM
 
 ## Setup
 
 ```powershell
 uv sync                                  # or: pip install -e ".[dev]"
-.\scripts\fetch_backends.ps1             # Colibrì + llama.cpp source (see docs/BACKENDS.md)
+.\scripts\fetch_backends.ps1             # clones Colibrì and llama.cpp source (see docs/BACKENDS.md)
 ```
 
-Point HIVI at your binaries and models if they are not in the defaults:
+Engines are not committed to this repo. You still need a built `llama-server`
+(on `PATH`, or at `HIVI_LLAMA_SERVER`) and Colibrì **2.1.0 or newer**.
+
+### Configuration
 
 | Variable | Default |
 |----------|---------|
 | `HIVI_MODELS_ROOT` | `Models/` (from `configs/storage.yaml`) |
-| `HIVI_LLAMA_SERVER` | `data/P1_1/runtime/llama.cpp/bin/llama-server.exe`, else PATH |
+| `HIVI_DATA_ROOT` | `data/` |
+| `HIVI_LLAMA_SERVER` | `data/P1_1/runtime/llama.cpp/bin/llama-server.exe`, else `PATH` |
 | `HIVI_COLI` | `src/hivi/inference/colibri-LLM-main/c/coli` |
 | `HIVI_BACKEND_PORT` | `8080` |
-| `HIVI_HAIE_SEMANTIC` | Off; set to `1` to enable the extra LLM intent-classification call |
-| `HIVI_SCAN_TTL_S` | `10` seconds for the model-library scan cache |
+| `HIVI_HAIE_SEMANTIC` | off; `1` enables the extra LLM intent-classification call |
 
-Full list: `docs/BACKENDS.md`. Nothing in the code refers to a specific user's
-home folder.
+The full list (router limits, RAM reserve, side-service ports and timeouts) is in
+[`docs/BACKENDS.md`](docs/BACKENDS.md) and [`docs/MODEL_ROUTER.md`](docs/MODEL_ROUTER.md).
 
-### HAIE behavior
+**Image generation** is optional. Paths come from `configs/image.yaml`, otherwise
+HIVI searches `Models/Image`. The `configs/image.yaml` in this repo contains
+absolute paths from the author's machine; edit them or delete the file before use.
 
-HAIE classifies each message locally with rule-based matching by default, so a
-second model request is not required before the actual reply. It recognizes
-coding, architecture, math, research, explanation, writing, brainstorming,
-greetings and chat, and carries short follow-ups such as "make it async" from
-the previous user request. Set `HIVI_HAIE_SEMANTIC=1` when you prefer the
-optional semantic LLM classifier for ambiguous prompts.
+### Hindsight (optional)
 
-### Personal memory, history, and backups
+Project memory uses a separate Hindsight server, which is not installed by
+`uv sync`:
 
-The chat UI's gear button opens **Memory & settings**. Personal memories and
-chat history stay on this PC under `data/memory/` by default:
-
-- HIVI can learn durable facts and preferences after replies, recall relevant
-  memories in later chats, and show an undo chip when it updates memory.
-- Use a temporary chat when a conversation should neither read nor write
-  personal memory.
-- Manage, edit, delete, import, or export memories from the Memory screen.
-- Open chat history with the sidebar button or `Ctrl+Shift+H`; search, pin,
-  rename, and delete saved conversations.
-- The **You & HIVI** tab controls the local profile, personality, mood behavior,
-  and response feedback. Feedback can be exported for later tuning.
-- The **Backups** tab supports manual snapshots, retention, a custom backup
-  folder (including a USB drive), and restore. Models are never copied into
-  backups because they are re-downloadable.
-
-Automatic snapshots include memory, feedback, settings, configs, HAIE data,
-and readable `memory.md` exports. The default backup location is
-`data/backups/`.
+```powershell
+uv venv .venv-hindsight
+uv pip install --python .venv-hindsight hindsight-api
+```
 
 ## Run
 
 ```powershell
-.\scripts\hivi_ui.ps1        # chat UI on http://127.0.0.1:7860
-.\scripts\start_hindsight.ps1  # after the UI is up, so it uses the memory gateway
-uv run python interfaces/hivi-desktop/hivi_app.py  # desktop window / app-style browser fallback
+.\scripts\hivi_ui.ps1           # chat UI at http://127.0.0.1:7860 (opens Chrome)
+.\scripts\start_hindsight.ps1   # optional; start after the UI so it uses the memory gateway (:8888)
+uv run python interfaces/hivi-desktop/hivi_app.py   # native desktop window instead of Chrome
+.\scripts\install_hivi_shortcut.ps1                 # one-time: create a desktop shortcut
 ```
 
-The desktop launcher reuses a running HIVI server, or starts and stops one for
-the lifetime of its window. On Windows, use the **HIVI** shortcut on the
-desktop after creating it once:
+The desktop launcher reuses a running HIVI server or starts one, and stops only
+processes it started (tracked in `data/run/hivi_backend.json`). If something else
+holds `:8080`, loading a model fails with that process's PID rather than killing it.
+Pass `--keep-running` to leave the server up after the window closes.
 
-```powershell
-.\scripts\install_hivi_shortcut.ps1
+### Calling HIVI from other tools
+
+```
+POST http://127.0.0.1:7860/v1/chat/completions    {"model": "hivi-heavy", ...}
+POST http://127.0.0.1:7860/v1/embeddings
+POST http://127.0.0.1:7860/v1/rerank
+GET  http://127.0.0.1:7860/api/roles              # what each role resolves to
 ```
 
-Pin the **HIVI** shortcut itself to the taskbar. Do not pin the running
-Python window; Windows uses the Python host icon for script-launched windows.
+Swaps take time (a ~20 GB model reloads from disk), so batch requests by model.
 
-The desktop app starts the server and window in parallel, shows startup
-progress, and enforces a single running HIVI window. Closing the window stops
-only processes HIVI started; an unrelated process already using `:8080` is
-left untouched. To keep the server running after closing the desktop window,
-launch the app with `--keep-running`.
+## Your data
 
-HIVI only stops processes it started (tracked in `data/run/hivi_backend.json`).
-If something else already holds `:8080`, loading a model fails with the PID
-instead of killing it.
+Personal memory, chat history, feedback and backups stay on this PC under
+`data/` (git-ignored). Use a temporary chat for a conversation that should neither
+read nor write memory. Open **Memory & settings** from the gear button in the UI.
+Backups default to `data/backups/` and can be pointed at a USB drive.
 
 ## Tests
 
 ```powershell
-pytest                       # offline suite (live tests skip without :8080/:8888)
-pytest tests/desktop/test_hivi_app.py  # desktop launcher tests only
-.\scripts\run_project_room_e2e.ps1   # live ProjectRoom against real inference + Hindsight
+pytest                                   # offline suite; live tests skip without :8080 / :8888
+pytest tests/desktop/test_hivi_app.py    # desktop launcher only
+.\scripts\run_project_room_e2e.ps1       # live ProjectRoom against real inference + Hindsight
+```
+
+## Repository layout
+
+```
+configs/                  storage, model roles, routing, image generation
+docs/                     backends, model router, memory stabilization notes, roadmap
+interfaces/hivi-chat/     control server, UI, HAIE, routing, memory, backups, image gen
+interfaces/hivi-desktop/  native desktop launcher
+scripts/                  launchers, backend fetch, Hindsight start, P1.0 model-library audit
+src/hivi/                 paths, memory core, LangGraph orchestrator, SQLite ledger
+tests/                    chat, desktop, memory, routing, e2e
+hivi-ieee-source/         LaTeX source of the design paper
 ```
 
 ## Model library
 
-`HIVI USB Model Library Final Design.docx` describes the USB shelf and SHA-256
-workflow: models are stored on USB, verified, and run from the NVMe.
+`HIVI USB Model Library Final Design.docx` describes the USB shelf: models live on
+an exFAT USB drive with SHA-256 checksums, are verified after copying, and always
+run from the NVMe copy. `scripts/p1_0/` is the read-only audit that inventories and
+hash-checks a model library.
 
-## IEEE paper
+## Design paper
 
-The checked-in paper package contains the rendered
-[`HIVI_Vision_Paper_IEEE.pdf`](HIVI_Vision_Paper_IEEE.pdf) and the complete
-IEEEtran source in [`hivi-ieee-source/`](hivi-ieee-source/). The source includes
-the main `hivi.tex`, all section files, `refs.bib`, and the local IEEEtran class
-and bibliography style files so the document can be rebuilt without relying on
-untracked project files.
+[`HIVI_Vision_Paper_IEEE.pdf`](HIVI_Vision_Paper_IEEE.pdf) lays out the full vision:
+a personal assistant on consumer hardware, in nine build stages. The prototype
+implements the foundation and the first two stages. LaTeX sources are in
+[`hivi-ieee-source/`](hivi-ieee-source/).
+
+## License
+
+MIT, as declared in `pyproject.toml`.
