@@ -11,6 +11,9 @@ import argparse
 import asyncio
 import json
 import os
+import re
+import secrets
+import subprocess
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -104,6 +107,8 @@ _FAST_WAIT = 1.2
 _FAST_CACHE = {"at": 0.0, "value": None, "gpu_at": 0.0, "gpu_wall": None}
 _SLOW_CACHE = {"at": 0.0, "key": None, "value": None}
 _PROBE_TASKS: dict[str, asyncio.Task] = {}
+_IMAGE_LOCK = asyncio.Lock()
+_IMAGE_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}\.png$")
 
 
 class BackendGate:
@@ -281,6 +286,113 @@ async def api_route(request: Request):
         "score": decision.score,
         "reason": decision.reason,
     }
+
+
+def _image_paths() -> tuple[Path, Path, Path | None, Path | None]:
+    root = paths.models_root() / "Image"
+    cli = Path(os.environ.get("HIVI_SD_CLI", root / "sd-master-532d2c1-bin-win-cuda12-x64" / "sd-cli.exe"))
+    model_env = os.environ.get("HIVI_IMAGE_MODEL", "").strip()
+    model = Path(model_env) if model_env else Path()
+    if not model_env:
+        candidates = sorted(root.glob("*qwen-image*Q4_K_M.gguf"))
+        if not candidates:
+            candidates = sorted(root.glob("*qwen-image*.gguf"))
+        if candidates:
+            model = candidates[0]
+    llm_env = os.environ.get("HIVI_IMAGE_LLM", "").strip()
+    llm = Path(llm_env) if llm_env else None
+    if not llm_env:
+        # Qwen Image 2.1 uses a separate Qwen3-VL text encoder. Keep it in a
+        # dedicated folder so it cannot be mistaken for a diffusion model.
+        candidates = sorted((root / "text_encoders").glob("*Qwen3VL*Q4_K_M.gguf"))
+        if not candidates:
+            candidates = sorted((root / "text_encoders").glob("*Qwen3VL*.gguf"))
+        llm = candidates[0] if candidates else None
+    vae_env = os.environ.get("HIVI_IMAGE_VAE", "").strip()
+    vae = Path(vae_env) if vae_env else None
+    if not vae_env:
+        candidates = sorted(root.glob("*vae*.safetensors"))
+        vae = candidates[0] if candidates else None
+    return cli, model, vae, llm
+
+
+def _generate_image(prompt: str, width: int, height: int, steps: int, seed: int | None) -> str:
+    cli, model, vae, llm = _image_paths()
+    if not cli.is_file():
+        raise RuntimeError("local image generator is not installed")
+    if not model.is_file():
+        raise RuntimeError("no Qwen Image model was found under Models\\Image")
+    if llm is None or not llm.is_file():
+        raise RuntimeError(
+            "Qwen Image 2.1 needs a separate Qwen3-VL text encoder. "
+            "Place a Qwen3VL GGUF under Models\\Image\\text_encoders "
+            "(Q4_K_M recommended), or set HIVI_IMAGE_LLM to its full path."
+        )
+    image_dir = paths.data_root() / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{secrets.token_urlsafe(18).replace('-', '_')}.png"
+    output = image_dir / filename
+    command = [
+        str(cli), "--diffusion-model", str(model), "--llm", str(llm), "--prompt", prompt,
+        "--output", str(output), "--width", str(width), "--height", str(height),
+        "--steps", str(steps),
+    ]
+    if vae is not None and vae.is_file():
+        command.extend(["--vae", str(vae)])
+    if seed is not None:
+        command.extend(["--seed", str(seed)])
+    extra = os.environ.get("HIVI_IMAGE_ARGS", "").strip()
+    if extra:
+        command.extend(extra.split())
+    completed = subprocess.run(
+        command, cwd=str(cli.parent), capture_output=True, text=True,
+        timeout=float(os.environ.get("HIVI_IMAGE_TIMEOUT_S", "900")),
+        check=False,
+    )
+    if completed.returncode != 0 or not output.is_file():
+        detail = (completed.stderr or completed.stdout or "image generator failed").strip()
+        raise RuntimeError(detail[-1200:])
+    return filename
+
+
+@app.post("/api/images/generate")
+async def api_images_generate(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt") if isinstance(body, dict) else None
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise HTTPException(400, "prompt must be a non-empty string")
+    try:
+        width = int(body.get("width", 768))
+        height = int(body.get("height", 768))
+        steps = int(body.get("steps", 4))
+        seed = body.get("seed")
+        seed = int(seed) if seed not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(400, "width, height, steps and seed must be numeric") from None
+    if width not in (512, 768, 1024) or height not in (512, 768, 1024):
+        raise HTTPException(400, "width and height must be 512, 768 or 1024")
+    if steps < 1 or steps > 50:
+        raise HTTPException(400, "steps must be between 1 and 50")
+    if len(prompt.strip()) > 2000:
+        raise HTTPException(400, "prompt must be 2000 characters or fewer")
+    async with _IMAGE_LOCK:
+        try:
+            filename = await asyncio.to_thread(_generate_image, prompt.strip(), width, height, steps, seed)
+        except subprocess.TimeoutExpired:
+            raise HTTPException(504, "image generation timed out") from None
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from None
+    return {"image_url": f"/api/images/{filename}", "prompt": prompt.strip(), "seed": seed}
+
+
+@app.get("/api/images/{filename}")
+async def api_image(filename: str):
+    if not _IMAGE_ID.fullmatch(filename):
+        raise HTTPException(404, "image not found")
+    image = paths.data_root() / "images" / filename
+    if not image.is_file():
+        raise HTTPException(404, "image not found")
+    return FileResponse(image, media_type="image/png", headers=_NO_CACHE)
 
 
 @app.get("/api/status")
