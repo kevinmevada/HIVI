@@ -38,6 +38,7 @@ packages = ["src/hivi"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = ["server: image tests that also install a fake sd-server"]
 
 [tool.ruff]
 line-length = 100

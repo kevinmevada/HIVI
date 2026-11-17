@@ -1,11 +1,27 @@
+# Local image generation (stable-diffusion.cpp).
 cli: "C:/Users/mevad/Desktop/HIVI/Models/Image/sd-master-532d2c1-bin-win-cuda12-x64/sd-cli.exe"
-
 model: "C:/Users/mevad/Desktop/HIVI/Models/Image/qwen-image-2.1-turbo-Q4_K_M.gguf"
-
 text_encoder: "C:/Users/mevad/Desktop/HIVI/Models/Image/text_encoders/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
-
 vae: "C:/Users/mevad/Desktop/HIVI/Models/Image/qwen_image_2.1_vae_bf16.safetensors"
 
-extra_args: "--backend cuda0 --offload-to-cpu --vae-tiling --sigmas qwen-image-2.1-turbo --cfg-scale 1.0 --sampling-method euler"
+# sd-server (next to sd-cli) stays running while you make images, so only the
+# first picture loads the weights. It stops before the chat model comes back.
+server_mode: auto          # auto | false (always use sd-cli)
+server_port: 7873
 
+# Settings come from the model: Turbo = 8-step sigma preset, CFG 1, euler, 1024 px.
+# Your build fits weights to free VRAM by itself (--auto-fit) and picks flash
+# attention itself, so HIVI does not force --offload-to-cpu. If a render runs out of
+# GPU memory, HIVI retries once with --offload-to-cpu --vae-tiling and remembers it.
+low_vram: auto             # auto | true | false
+mmap: true
+extra_args: "--backend cuda0"
+
+# Short requests are rewritten into a detailed prompt (by the chat model when it is
+# loaded, by rules when it is paused). Qwen-Image does much better with detail.
+enhance_prompt: true
+
+# The chat model is paused while you make images and comes back this many seconds
+# after the last one (a chat message brings it back at once).
 unload_chat_model: true
+reload_delay_s: 45
