@@ -43,6 +43,22 @@ class ModelEntry:
     kind: str = CHAT  # "chat" | "embedding" | "reranker" | "fim"
 
 
+_IMAGE_DIRS = {"image", "images", "text_encoders", "text_encoder", "vae", "diffusion", "sd", "comfyui"}
+_IMAGE_NAME = re.compile(
+    r"qwen[-_]?image|flux|sdxl|sd3|stable[-_]?diffusion|\bvae\b|text[-_]?encoder|t5xxl|clip[-_]?l|"
+    r"wan2|hunyuan[-_]?(?:dit|video)|lumina|pixart|kolors|z[-_]?image",
+    re.IGNORECASE,
+)
+
+
+def _is_image_weights(path: Path, rel: str) -> bool:
+    """GGUF files that belong to the image generator, never to the chat picker."""
+    parts = {p.lower() for p in Path(rel).parts[:-1]}
+    if parts & _IMAGE_DIRS:
+        return True
+    return bool(_IMAGE_NAME.search(path.stem))
+
+
 def _kind(name: str, rel: str) -> str:
     """Embedding / reranker GGUFs are retrieval models, not chat models."""
     text = f"{name} {rel}".lower()
@@ -246,6 +262,8 @@ def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
         stem = gguf.stem
         if stem.lower().startswith("mmproj"):
             continue
+        if _is_image_weights(gguf, rel):
+            continue  # diffusion models, VAEs and text encoders are not chat models
         mid = re.sub(r"[^a-zA-Z0-9]+", "-", stem).strip("-").lower()
         kind = _kind(stem, rel)
         # Retrieval models never take a vision projector.

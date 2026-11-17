@@ -12,8 +12,6 @@ import asyncio
 import json
 import os
 import re
-import secrets
-import subprocess
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -25,6 +23,7 @@ import backups
 import chat_history
 import gpu_doctor
 import httpx
+import image_gen
 import memory_engine
 import model_router
 import personal_memory as pm
@@ -107,7 +106,6 @@ _FAST_WAIT = 1.2
 _FAST_CACHE = {"at": 0.0, "value": None, "gpu_at": 0.0, "gpu_wall": None}
 _SLOW_CACHE = {"at": 0.0, "key": None, "value": None}
 _PROBE_TASKS: dict[str, asyncio.Task] = {}
-_IMAGE_LOCK = asyncio.Lock()
 _IMAGE_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}\.png$")
 
 
@@ -288,71 +286,53 @@ async def api_route(request: Request):
     }
 
 
-def _image_paths() -> tuple[Path, Path, Path | None, Path | None]:
-    root = paths.models_root() / "Image"
-    cli = Path(os.environ.get("HIVI_SD_CLI", root / "sd-master-532d2c1-bin-win-cuda12-x64" / "sd-cli.exe"))
-    model_env = os.environ.get("HIVI_IMAGE_MODEL", "").strip()
-    model = Path(model_env) if model_env else Path()
-    if not model_env:
-        candidates = sorted(root.glob("*qwen-image*Q4_K_M.gguf"))
-        if not candidates:
-            candidates = sorted(root.glob("*qwen-image*.gguf"))
-        if candidates:
-            model = candidates[0]
-    llm_env = os.environ.get("HIVI_IMAGE_LLM", "").strip()
-    llm = Path(llm_env) if llm_env else None
-    if not llm_env:
-        # Qwen Image 2.1 uses a separate Qwen3-VL text encoder. Keep it in a
-        # dedicated folder so it cannot be mistaken for a diffusion model.
-        candidates = sorted((root / "text_encoders").glob("*Qwen3VL*Q4_K_M.gguf"))
-        if not candidates:
-            candidates = sorted((root / "text_encoders").glob("*Qwen3VL*.gguf"))
-        llm = candidates[0] if candidates else None
-    vae_env = os.environ.get("HIVI_IMAGE_VAE", "").strip()
-    vae = Path(vae_env) if vae_env else None
-    if not vae_env:
-        candidates = sorted(root.glob("*vae*.safetensors"))
-        vae = candidates[0] if candidates else None
-    return cli, model, vae, llm
+def _unload_chat_for_image() -> str | None:
+    """Free the GPU for a render. Returns the chat model id to reload afterwards."""
+    model_id = STATE.model_id
+    if not model_id:
+        return None
+    if not SWITCH_LOCK.acquire(timeout=120):
+        raise RuntimeError("a model switch is in progress; try again in a moment")
+    try:
+        stop_runtime()
+    finally:
+        SWITCH_LOCK.release()
+    return model_id
 
 
-def _generate_image(prompt: str, width: int, height: int, steps: int, seed: int | None) -> str:
-    cli, model, vae, llm = _image_paths()
-    if not cli.is_file():
-        raise RuntimeError("local image generator is not installed")
-    if not model.is_file():
-        raise RuntimeError("no Qwen Image model was found under Models\\Image")
-    if llm is None or not llm.is_file():
-        raise RuntimeError(
-            "Qwen Image 2.1 needs a separate Qwen3-VL text encoder. "
-            "Place a Qwen3VL GGUF under Models\\Image\\text_encoders "
-            "(Q4_K_M recommended), or set HIVI_IMAGE_LLM to its full path."
+def _reload_chat_after_image(model_id: str) -> None:
+    model = get_model(model_id)
+    if model is None:
+        return
+    if not SWITCH_LOCK.acquire(timeout=120):
+        return
+    try:
+        select_model(model)
+    finally:
+        SWITCH_LOCK.release()
+
+
+async def _run_image_job(job: image_gen.Job) -> None:
+    # Chat requests wait while the GPU belongs to the image model.
+    GATE.close()
+    try:
+        await GATE.wait_idle(_MEMORY_DRAIN_S)
+        await asyncio.to_thread(
+            image_gen.run_job, job,
+            unload_chat=_unload_chat_for_image, reload_chat=_reload_chat_after_image,
         )
-    image_dir = paths.data_root() / "images"
-    image_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{secrets.token_urlsafe(18).replace('-', '_')}.png"
-    output = image_dir / filename
-    command = [
-        str(cli), "--diffusion-model", str(model), "--llm", str(llm), "--prompt", prompt,
-        "--output", str(output), "--width", str(width), "--height", str(height),
-        "--steps", str(steps),
-    ]
-    if vae is not None and vae.is_file():
-        command.extend(["--vae", str(vae)])
-    if seed is not None:
-        command.extend(["--seed", str(seed)])
-    extra = os.environ.get("HIVI_IMAGE_ARGS", "").strip()
-    if extra:
-        command.extend(extra.split())
-    completed = subprocess.run(
-        command, cwd=str(cli.parent), capture_output=True, text=True,
-        timeout=float(os.environ.get("HIVI_IMAGE_TIMEOUT_S", "900")),
-        check=False,
-    )
-    if completed.returncode != 0 or not output.is_file():
-        detail = (completed.stderr or completed.stdout or "image generator failed").strip()
-        raise RuntimeError(detail[-1200:])
-    return filename
+    finally:
+        GATE.open()
+
+
+@app.get("/api/images/status")
+async def api_images_status():
+    return await asyncio.to_thread(image_gen.status)
+
+
+@app.get("/api/images/gallery")
+async def api_images_gallery(limit: int = 60):
+    return {"images": await asyncio.to_thread(image_gen.list_images, max(1, min(500, limit)))}
 
 
 @app.post("/api/images/generate")
@@ -364,25 +344,40 @@ async def api_images_generate(request: Request):
     try:
         width = int(body.get("width", 768))
         height = int(body.get("height", 768))
-        steps = int(body.get("steps", 4))
+        steps = int(body.get("steps", image_gen.DEFAULT_STEPS))
         seed = body.get("seed")
         seed = int(seed) if seed not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(400, "width, height, steps and seed must be numeric") from None
-    if width not in (512, 768, 1024) or height not in (512, 768, 1024):
-        raise HTTPException(400, "width and height must be 512, 768 or 1024")
-    if steps < 1 or steps > 50:
-        raise HTTPException(400, "steps must be between 1 and 50")
+    if width not in image_gen.SIZES or height not in image_gen.SIZES:
+        raise HTTPException(400, f"width and height must be one of {list(image_gen.SIZES)}")
+    if steps < 1 or steps > image_gen.MAX_STEPS:
+        raise HTTPException(400, f"steps must be between 1 and {image_gen.MAX_STEPS}")
     if len(prompt.strip()) > 2000:
         raise HTTPException(400, "prompt must be 2000 characters or fewer")
-    async with _IMAGE_LOCK:
-        try:
-            filename = await asyncio.to_thread(_generate_image, prompt.strip(), width, height, steps, seed)
-        except subprocess.TimeoutExpired:
-            raise HTTPException(504, "image generation timed out") from None
-        except RuntimeError as exc:
-            raise HTTPException(503, str(exc)) from None
-    return {"image_url": f"/api/images/{filename}", "prompt": prompt.strip(), "seed": seed}
+    setup = await asyncio.to_thread(image_gen.status)
+    if not setup["ready"]:
+        raise HTTPException(503, "; ".join(setup["missing"]))
+    job = image_gen.new_job(prompt.strip(), width=width, height=height, steps=steps, seed=seed)
+    asyncio.get_running_loop().create_task(_run_image_job(job))
+    return job.to_dict()
+
+
+@app.get("/api/images/jobs/{job_id}")
+async def api_images_job(job_id: str):
+    job = image_gen.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.to_dict()
+
+
+@app.post("/api/images/jobs/{job_id}/cancel")
+async def api_images_job_cancel(job_id: str):
+    job = image_gen.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    job.cancel()
+    return job.to_dict()
 
 
 @app.get("/api/images/{filename}")

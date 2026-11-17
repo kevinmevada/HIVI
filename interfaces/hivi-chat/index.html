@@ -659,6 +659,246 @@
       display: none;
     }
 
+    /* Loading canvas while an image renders (Claude-style) */
+    .image-canvas {
+      position: relative;
+      width: min(620px, 100%);
+      padding: 10px;
+      border: 0.5px solid var(--sep);
+      border-radius: 20px;
+      background: var(--bg-elev);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.08);
+    }
+
+    .image-canvas .frame {
+      position: relative;
+      width: 100%;
+      aspect-ratio: var(--ar, 1 / 1);
+      max-height: 620px;
+      overflow: hidden;
+      border-radius: 14px;
+      background: var(--fill-2);
+    }
+
+    .image-canvas .frame::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background:
+        radial-gradient(40% 40% at 30% 30%, rgba(228, 111, 178, 0.55), transparent 70%),
+        radial-gradient(35% 35% at 70% 60%, rgba(120, 100, 255, 0.5), transparent 70%),
+        radial-gradient(45% 45% at 50% 85%, rgba(0, 200, 190, 0.45), transparent 70%);
+      filter: blur(40px);
+      animation: canvas-drift 9s ease-in-out infinite alternate;
+      opacity: 0.9;
+    }
+
+    .image-canvas .frame::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, 0.18) 50%, transparent 70%);
+      background-size: 240% 100%;
+      animation: canvas-sheen 2.4s linear infinite;
+      mix-blend-mode: soft-light;
+    }
+
+    @keyframes canvas-drift {
+      from {
+        transform: translate(-6%, -4%) rotate(0deg) scale(1);
+      }
+
+      to {
+        transform: translate(6%, 5%) rotate(25deg) scale(1.15);
+      }
+    }
+
+    @keyframes canvas-sheen {
+      from {
+        background-position: 120% 0;
+      }
+
+      to {
+        background-position: -120% 0;
+      }
+    }
+
+    .image-canvas .frame img {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+
+    .image-canvas.done .frame::before,
+    .image-canvas.done .frame::after {
+      animation: none;
+      opacity: 0;
+      transition: opacity 0.6s ease;
+    }
+
+    .image-canvas.done .frame img {
+      opacity: 1;
+    }
+
+    .image-canvas .overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: #fff;
+      text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+      text-align: center;
+      padding: 16px;
+      transition: opacity 0.4s;
+    }
+
+    .image-canvas.done .overlay {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .image-canvas .overlay .bunny {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.35);
+      display: grid;
+      place-items: center;
+      animation: canvas-pulse 1.6s ease-in-out infinite;
+    }
+
+    .image-canvas .overlay .bunny img {
+      position: static;
+      width: 24px;
+      height: 24px;
+      opacity: 1;
+      object-fit: contain;
+    }
+
+    @keyframes canvas-pulse {
+      0%, 100% {
+        transform: scale(1);
+      }
+
+      50% {
+        transform: scale(1.12);
+      }
+    }
+
+    .image-canvas .overlay .stage {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .image-canvas .overlay .sub {
+      font-size: 12px;
+      opacity: 0.85;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .image-canvas .bar {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      height: 3px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.25);
+      overflow: hidden;
+    }
+
+    .image-canvas .bar i {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: 999px;
+      background: #fff;
+      transition: width 0.5s ease;
+    }
+
+    .image-canvas .bar.indeterminate i {
+      width: 30%;
+      animation: bar-slide 1.4s ease-in-out infinite;
+    }
+
+    @keyframes bar-slide {
+      from {
+        transform: translateX(-100%);
+      }
+
+      to {
+        transform: translateX(340%);
+      }
+    }
+
+    .image-canvas.done .bar {
+      opacity: 0;
+    }
+
+    .image-canvas .under {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 10px 4px 2px;
+      color: var(--label-2);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .image-canvas .under .prompt {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .image-canvas .under button,
+    .image-canvas .under a {
+      flex: none;
+      padding: 5px 10px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      color: var(--label-2);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .image-canvas .under button:hover,
+    .image-canvas .under a:hover {
+      background: var(--fill-2);
+      color: var(--label);
+    }
+
+    .image-canvas .error {
+      margin: 10px 4px 4px;
+      color: var(--red);
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .image-canvas .frame::before,
+      .image-canvas .frame::after,
+      .image-canvas .overlay .bunny,
+      .image-canvas .bar.indeterminate i {
+        animation: none;
+      }
+    }
+
     .image-card {
       width: min(620px, 100%);
       padding: 10px;
@@ -3039,7 +3279,53 @@
       requestAnimationFrame(() => scrollToBottom(true));
     }
 
-    async function generateImage(prompt) {
+    // Image generation: a job on the server, a live canvas here (polls every 600 ms).
+    let imageStatus = null;
+    async function loadImageStatus() {
+      try {
+        const r = await fetch("/api/images/status", { cache: "no-store" });
+        if (r.ok) imageStatus = await r.json();
+      } catch (_) { }
+      return imageStatus;
+    }
+    const IMAGE_REQUEST_RE = /^(?:please\s+|pls\s+|hivi[,!]?\s+|can you\s+|could you\s+)*(?:generate|create|make|draw|paint|render|design)\s+(?:me\s+)?(?:an?\s+|the\s+|some\s+)?(?:\w+\s+){0,3}?(?:image|picture|photo|illustration|artwork|logo|poster|wallpaper|icon|painting|sketch|drawing)\b/i;
+    function looksLikeImageRequest(text) {
+      return IMAGE_REQUEST_RE.test(String(text || "").trim());
+    }
+    function imageCanvas(prompt, width, height) {
+      const wrap = el("div", "msg assistant");
+      const card = el("div", "image-canvas");
+      card.style.setProperty("--ar", `${width} / ${height}`);
+      const frame = el("div", "frame");
+      const img = el("img");
+      img.alt = prompt;
+      const overlay = el("div", "overlay");
+      const bunny = el("div", "bunny");
+      const bimg = el("img");
+      bimg.src = "/static/brand/bunny.png";
+      bimg.alt = "";
+      bunny.appendChild(bimg);
+      const stage = el("div", "stage", "Getting ready");
+      const sub = el("div", "sub", "");
+      overlay.append(bunny, stage, sub);
+      const bar = el("div", "bar indeterminate");
+      const fill = el("i");
+      bar.appendChild(fill);
+      frame.append(img, overlay, bar);
+      const under = el("div", "under");
+      const ptext = el("span", "prompt", prompt);
+      ptext.title = prompt;
+      const cancel = el("button", "", "Cancel");
+      cancel.type = "button";
+      under.append(ptext, cancel);
+      card.append(frame, under);
+      wrap.appendChild(card);
+      thread.appendChild(wrap);
+      updateEmpty();
+      requestAnimationFrame(() => scrollToBottom(true));
+      return { wrap, card, img, stage, sub, bar, fill, under, cancel, ptext };
+    }
+    async function generateImage(prompt, opts = {}) {
       const text = String(prompt || "").trim();
       if (!text || busy) return;
       busy = true;
@@ -3047,30 +3333,90 @@
       composerWrap.classList.add("generating");
       document.body.classList.add("is-working");
       statusLine.textContent = "Creating image…";
-      adaptiveHint.textContent = "Rendering locally with Qwen Image…";
-      const note = addNote("Creating image…");
+      adaptiveHint.textContent = "Rendering locally…";
+      const width = opts.width || 768, height = opts.height || 768;
+      const c = imageCanvas(text, width, height);
+      let jobId = null, cancelled = false;
+      c.cancel.addEventListener("click", async () => {
+        cancelled = true;
+        c.cancel.disabled = true;
+        c.stage.textContent = "Cancelling";
+        if (jobId) fetch(`/api/images/jobs/${jobId}/cancel`, { method: "POST" }).catch(() => { });
+      });
+      const fail = (message) => {
+        c.card.classList.add("done");
+        c.img.remove();
+        c.card.querySelector(".frame").style.aspectRatio = "auto";
+        c.card.querySelector(".frame").style.height = "0";
+        c.card.querySelector(".frame").style.display = "none";
+        c.cancel.remove();
+        c.card.appendChild(el("div", "error", message));
+        const retry = el("button", "", "Try again");
+        retry.type = "button";
+        retry.addEventListener("click", () => generateImage(text, opts));
+        c.under.appendChild(retry);
+      };
       try {
         const r = await fetch("/api/images/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: text }),
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: text, width, height, steps: opts.steps, seed: opts.seed }),
         });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
-        if (note.isConnected) note.remove();
-        addImageCard(data);
+        const first = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(first.detail || `HTTP ${r.status}`);
+        jobId = first.id;
+        const t0 = Date.now();
+        let job = first;
+        while (!job.done) {
+          await new Promise((res) => setTimeout(res, 600));
+          const jr = await fetch(`/api/images/jobs/${jobId}`, { cache: "no-store" });
+          if (!jr.ok) throw new Error(`lost the job (HTTP ${jr.status})`);
+          job = await jr.json();
+          const secs = Math.round((Date.now() - t0) / 1000);
+          c.stage.textContent = job.stage;
+          c.sub.textContent = [job.message, `${secs}s`].filter(Boolean).join(" · ");
+          if (job.state === "rendering" && job.total_steps) {
+            c.bar.classList.remove("indeterminate");
+            c.fill.style.width = `${job.percent}%`;
+          } else if (job.percent > 0 && job.state !== "queued") {
+            c.bar.classList.remove("indeterminate");
+            c.fill.style.width = `${job.percent}%`;
+          }
+          statusLine.textContent = `Creating image · ${job.stage}`;
+        }
+        if (job.state === "cancelled") {
+          c.wrap.remove();
+          addNote("Image cancelled.");
+        } else if (job.state === "failed") {
+          fail("Couldn’t create image: " + (job.error || "unknown error"));
+        } else {
+          c.img.src = job.image_url;
+          await new Promise((res) => { c.img.onload = res; c.img.onerror = res; });
+          c.card.classList.add("done");
+          c.cancel.remove();
+          const download = el("a", "", "Download");
+          download.href = job.image_url;
+          download.download = "hivi-image.png";
+          const again = el("button", "", "Regenerate");
+          again.type = "button";
+          again.addEventListener("click", () => generateImage(text, opts));
+          c.under.append(download, again);
+          if (job.seed != null) c.ptext.title = `${text}\nSeed ${job.seed}`;
+          c.sub.textContent = "";
+        }
         input.value = "";
         autosize();
       } catch (e) {
-        if (note.isConnected) note.remove();
-        addNote("Couldn’t create image: " + e.message, true);
+        if (!cancelled) fail("Couldn’t create image: " + e.message);
+        else c.wrap.remove();
       } finally {
         busy = false;
         composerWrap.classList.remove("generating");
         document.body.classList.remove("is-working");
         adaptiveHint.textContent = DEFAULT_HINT;
+        statusLine.textContent = "";
         setBusy(false);
         refreshHealth();
+        refreshStatus();
       }
     }
 
@@ -4320,7 +4666,7 @@
       }
       const text = input.value.trim();
       if ((!text && !pendingImage) || busy) return;
-      if (imageMode) {
+      if (imageMode || (!pendingImage && looksLikeImageRequest(text) && imageStatus?.ready)) {
         input.value = "";
         autosize();
         updateSendBtn();
@@ -4392,9 +4738,15 @@
       attachBtn.setAttribute("aria-label", imageMode ? "Chat mode" : "Create image");
       input.placeholder = imageMode ? "Describe an image to create…" : (temporary ? "Temporary chat · not remembered" : "Message HIVI");
       if (imageMode && pendingImage) setPendingImage(null);
+      if (imageMode) {
+        loadImageStatus().then((st) => {
+          if (st && !st.ready) addNote("Image generator isn’t set up: " + st.missing.join("; ") + ". See configs\\image.yaml.", true);
+        });
+      }
       updateSendBtn();
       input.focus();
     });
+    loadImageStatus();
     attachClear.addEventListener("click", () => setPendingImage(null));
     attachInput.addEventListener("change", () => {
       const file = attachInput.files && attachInput.files[0];

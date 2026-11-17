@@ -1,0 +1,11 @@
+cli: "C:/Users/mevad/Desktop/HIVI/Models/Image/sd-master-532d2c1-bin-win-cuda12-x64/sd-cli.exe"
+
+model: "C:/Users/mevad/Desktop/HIVI/Models/Image/qwen-image-2.1-turbo-Q4_K_M.gguf"
+
+text_encoder: "C:/Users/mevad/Desktop/HIVI/Models/Image/text_encoders/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+
+vae: "C:/Users/mevad/Desktop/HIVI/Models/Image/qwen_image_2.1_vae_bf16.safetensors"
+
+extra_args: "--backend cuda0 --offload-to-cpu --vae-tiling --sigmas qwen-image-2.1-turbo --cfg-scale 1.0 --sampling-method euler"
+
+unload_chat_model: true
