@@ -24,6 +24,7 @@ import chat_history
 import gpu_doctor
 import httpx
 import image_gen
+import image_server
 import memory_engine
 import model_router
 import personal_memory as pm
@@ -65,6 +66,7 @@ async def _lifespan(_app: FastAPI):
     backups.start_scheduler()
     yield
     memory_engine.EXTRACTOR.cancel()
+    await asyncio.to_thread(image_server.SERVER.stop)
     # Side services are HIVI-owned processes; don't leave them running.
     await asyncio.to_thread(aux_services.stop_all)
 
@@ -286,48 +288,196 @@ async def api_route(request: Request):
     }
 
 
-def _unload_chat_for_image() -> str | None:
-    """Free the GPU for a render. Returns the chat model id to reload afterwards."""
-    model_id = STATE.model_id
-    if not model_id:
-        return None
-    if not SWITCH_LOCK.acquire(timeout=120):
-        raise RuntimeError("a model switch is in progress; try again in a moment")
-    try:
+# --------------------------------------------------------------------------- #
+# Image generation: GPU handoff between the chat model and the image model
+# --------------------------------------------------------------------------- #
+#
+# One 8 GB card holds either the chat model or the image model. For a render the
+# chat model is *parked*: stopped while SWITCH_LOCK is held for the whole render,
+# so no chat request, agent or picker click can load a model onto the GPU under
+# sd-cli (that collision is what froze chat after images). The lock is released
+# when the render ends, the image is shown at once, and the chat model reloads in
+# the background after a short delay (a quick Regenerate skips the reload) or
+# immediately when a chat message needs it.
+
+class _ImageGpu:
+    def __init__(self) -> None:
+        self.busy = False                 # a render owns the GPU
+        self.parked: str | None = None    # chat model to bring back
+        self.reload_at: float | None = None
+        self.reloading = False
+        self.reload_error: str | None = None
+        self._timer: asyncio.Task | None = None
+        self._reload_task: asyncio.Task | None = None
+
+    def cancel_timer(self) -> None:
+        if self._timer and not self._timer.done():
+            self._timer.cancel()
+        self._timer = None
+        self.reload_at = None
+
+    def schedule_reload(self, delay: float) -> None:
+        self.cancel_timer()
+        if not self.parked:
+            return
+        self.reload_at = time.monotonic() + delay
+
+        async def later() -> None:
+            await asyncio.sleep(delay)
+            await self.reload_now()
+
+        self._timer = asyncio.get_running_loop().create_task(later())
+
+    async def reload_now(self) -> None:
+        """Bring the parked chat model back (shared by the timer and chat requests)."""
+        self.cancel_timer()
+        if self._reload_task and not self._reload_task.done():
+            await asyncio.shield(self._reload_task)
+            return
+        if not self.parked or self.busy:
+            return
+        self._reload_task = asyncio.get_running_loop().create_task(self._reload())
+        await asyncio.shield(self._reload_task)
+
+    async def _reload(self) -> None:
+        model_id = self.parked
+        model = await asyncio.to_thread(get_model, model_id) if model_id else None
+        if model is None:
+            self.parked = None
+            return
+        if _is_loaded(model):
+            self.parked = None
+            return
+        self.reloading = True
+        self.reload_error = None
+        try:
+            acquired = await asyncio.to_thread(SWITCH_LOCK.acquire, True, 300)
+            if not acquired:
+                self.reload_error = "timed out waiting for the GPU"
+                return
+            try:
+                if _is_loaded(model):
+                    self.parked = None
+                    return
+                # The image weights leave RAM and VRAM before the chat model returns.
+                await asyncio.to_thread(image_server.SERVER.stop)
+                GATE.close()
+                try:
+                    await GATE.wait_idle(_SWITCH_DRAIN_S)
+                    state = await asyncio.to_thread(select_model, model)
+                finally:
+                    GATE.open()
+            finally:
+                SWITCH_LOCK.release()
+            if state.status == "ready":
+                self.parked = None
+            else:
+                self.reload_error = state.detail or "reload failed"
+                self.parked = None  # don't loop; the UI shows the error and Load works as usual
+        finally:
+            self.reloading = False
+
+    def status(self) -> dict[str, Any]:
+        left = None if self.reload_at is None else max(0, round(self.reload_at - time.monotonic()))
+        return {"busy": self.busy, "parked": self.parked, "reload_in_s": left,
+                "reloading": self.reloading, "reload_error": self.reload_error}
+
+
+IMAGE_GPU = _ImageGpu()
+
+
+async def _enhance_prompt(job: image_gen.Job) -> None:
+    """Turn a short request into a detailed prompt: the chat model when it is up,
+    simple rules otherwise (it may be parked from the previous image)."""
+    if not image_gen.enhance_enabled() or not image_gen.needs_enhancing(job.prompt):
+        job.prompt_source = "as typed"
+        return
+    job._set("enhancing", "Writing a detailed prompt", 4)
+    t0 = time.perf_counter()
+    better = None
+    if STATE.status == "ready" and STATE.model_id and not IMAGE_GPU.parked:
+        if await GATE.enter(10):
+            try:
+                payload = {
+                    "model": backend_model_name() or "local",
+                    "messages": [{"role": "system", "content": image_gen.ENHANCE_SYSTEM},
+                                 {"role": "user", "content": job.prompt}],
+                    "temperature": 0.7, "max_tokens": 600, "stream": False,
+                    # Thinking off on both engines: Colibrì reads the top-level flag,
+                    # llama.cpp the template kwarg. Thinking would eat the token budget.
+                    "enable_thinking": False,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "reasoning_effort": "low",
+                }
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=3.0)) as client:
+                    r = await client.post(f"{BACKEND_BASE}/v1/chat/completions", json=payload)
+                if r.status_code < 400:
+                    msg = ((r.json().get("choices") or [{}])[0].get("message") or {})
+                    text = msg.get("content") or ""
+                    better = image_gen.clean_enhanced(text if isinstance(text, str) else "", job.prompt)
+                else:
+                    print(f"HIVI image: prompt rewrite failed: HTTP {r.status_code} {r.text[:200]}")
+            except (httpx.HTTPError, ValueError) as e:
+                print(f"HIVI image: prompt rewrite failed: {e}")
+            finally:
+                GATE.leave()
+    if better:
+        job.prompt_used, job.prompt_source = better, "chat model"
+    else:
+        job.prompt_used, job.prompt_source = image_gen.polish_prompt(job.prompt), "rules"
+    job.timings["prompt_s"] = time.perf_counter() - t0
+
+
+def _park_chat_model() -> None:
+    """Stop the chat model; caller holds SWITCH_LOCK."""
+    if STATE.model_id and IMAGE_GPU.parked is None:
+        IMAGE_GPU.parked = STATE.model_id
+    if STATE.model_id:
         stop_runtime()
-    finally:
-        SWITCH_LOCK.release()
-    return model_id
-
-
-def _reload_chat_after_image(model_id: str) -> None:
-    model = get_model(model_id)
-    if model is None:
-        return
-    if not SWITCH_LOCK.acquire(timeout=120):
-        return
-    try:
-        select_model(model)
-    finally:
-        SWITCH_LOCK.release()
 
 
 async def _run_image_job(job: image_gen.Job) -> None:
-    # Chat requests wait while the GPU belongs to the image model.
+    IMAGE_GPU.cancel_timer()
+    job.started_at = time.time()
+    await _enhance_prompt(job)
+    if job._cancel:
+        job._set("cancelled", "Cancelled", 0)
+        job.finished_at = time.time()
+        return
+    setup = await asyncio.to_thread(image_gen.discover)
+    job._set("preparing", "Preparing the GPU", 8)
+    t0 = time.perf_counter()
+    acquired = await asyncio.to_thread(SWITCH_LOCK.acquire, True, 300)
+    if not acquired:
+        job.error = "the GPU is busy loading a model; try again in a moment"
+        job._set("failed", "Failed", 0)
+        job.finished_at = time.time()
+        return
+    IMAGE_GPU.busy = True
     GATE.close()
     try:
-        await GATE.wait_idle(_MEMORY_DRAIN_S)
-        await asyncio.to_thread(
-            image_gen.run_job, job,
-            unload_chat=_unload_chat_for_image, reload_chat=_reload_chat_after_image,
-        )
+        await GATE.wait_idle(_SWITCH_DRAIN_S)
+        if setup.unload_chat:
+            await asyncio.to_thread(_park_chat_model)
+        job.timings["prepare_s"] = time.perf_counter() - t0
+        await asyncio.to_thread(image_gen.run_job, job)
     finally:
+        IMAGE_GPU.busy = False
         GATE.open()
+        SWITCH_LOCK.release()
+        if IMAGE_GPU.parked:
+            IMAGE_GPU.schedule_reload(image_gen.reload_delay_s())
 
 
 @app.get("/api/images/status")
 async def api_images_status():
-    return await asyncio.to_thread(image_gen.status)
+    out = await asyncio.to_thread(image_gen.status)
+    setup = await asyncio.to_thread(image_gen.discover)
+    binary = image_server.server_binary(setup)
+    out["server"] = {**image_server.SERVER.status(), "available": bool(binary and image_server.enabled()),
+                     "binary": str(binary) if binary else None}
+    out["low_vram_mode"] = image_gen.learned_low_vram()
+    return out
 
 
 @app.get("/api/images/gallery")
@@ -342,15 +492,19 @@ async def api_images_generate(request: Request):
     if not isinstance(prompt, str) or not prompt.strip():
         raise HTTPException(400, "prompt must be a non-empty string")
     try:
-        width = int(body.get("width", 768))
-        height = int(body.get("height", 768))
-        steps = int(body.get("steps", image_gen.DEFAULT_STEPS))
+        prof = image_gen.profile_for(image_gen.discover().model)
+        aspect = str(body.get("aspect") or "")
+        default_w, default_h = image_gen.ASPECTS.get(aspect, prof.size)
+        width = int(body.get("width") or default_w)
+        height = int(body.get("height") or default_h)
+        steps = int(body.get("steps") or prof.steps)
         seed = body.get("seed")
         seed = int(seed) if seed not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(400, "width, height, steps and seed must be numeric") from None
-    if width not in image_gen.SIZES or height not in image_gen.SIZES:
-        raise HTTPException(400, f"width and height must be one of {list(image_gen.SIZES)}")
+    if not image_gen.valid_size(width, height):
+        raise HTTPException(400, "width and height must be multiples of 32 between 512 and 1536 "
+                                 "(at most 1536×1024 pixels)")
     if steps < 1 or steps > image_gen.MAX_STEPS:
         raise HTTPException(400, f"steps must be between 1 and {image_gen.MAX_STEPS}")
     if len(prompt.strip()) > 2000:
@@ -358,7 +512,8 @@ async def api_images_generate(request: Request):
     setup = await asyncio.to_thread(image_gen.status)
     if not setup["ready"]:
         raise HTTPException(503, "; ".join(setup["missing"]))
-    job = image_gen.new_job(prompt.strip(), width=width, height=height, steps=steps, seed=seed)
+    job = image_gen.new_job(prompt.strip(), width=width, height=height, steps=steps, seed=seed,
+                            aspect=aspect)
     asyncio.get_running_loop().create_task(_run_image_job(job))
     return job.to_dict()
 
@@ -395,6 +550,24 @@ async def api_status():
     out = await asyncio.to_thread(status_dict)
     out["memory_inflight"] = GATE.background
     out["chat_inflight"] = GATE.foreground
+    img = IMAGE_GPU.status()
+    out["image"] = img
+    if img["busy"]:
+        out["status"] = "drawing"
+        out["detail"] = "Drawing an image · chat resumes when it finishes"
+    elif img["parked"] and not out.get("model_id"):
+        model = await asyncio.to_thread(get_model, img["parked"])
+        name = model.name if model else img["parked"]
+        out["model_id"] = img["parked"]       # keeps the picker and Send working
+        if img["reloading"]:
+            out["status"] = "loading"
+            out["detail"] = f"Bringing {name} back"
+        else:
+            out["status"] = "paused"
+            secs = img["reload_in_s"]
+            out["detail"] = f"{name} paused for images" + (f" · back in {secs}s" if secs else "")
+    elif img["reload_error"] and not out.get("model_id"):
+        out["detail"] = f"Chat model did not come back after the image: {img['reload_error']}"
     return out
 
 
@@ -655,6 +828,11 @@ async def api_select(request: Request):
     model = await asyncio.to_thread(get_model, mid)
     if not model:
         raise HTTPException(404, f"unknown model id: {mid}")
+    if IMAGE_GPU.busy:
+        raise HTTPException(409, "HIVI is drawing an image; load the model when it finishes")
+    IMAGE_GPU.cancel_timer()
+    IMAGE_GPU.parked = None  # an explicit choice replaces the parked model
+    await asyncio.to_thread(image_server.SERVER.stop)
     if not SWITCH_LOCK.acquire(blocking=False):
         raise HTTPException(409, "a model switch is already in progress")
     GATE.close()
@@ -697,6 +875,11 @@ async def api_engine(request: Request):
 
 @app.post("/api/stop")
 async def api_stop():
+    IMAGE_GPU.cancel_timer()
+    IMAGE_GPU.parked = None  # Stop means stay stopped, also after an image
+    if IMAGE_GPU.busy:
+        raise HTTPException(409, "HIVI is drawing an image")
+    await asyncio.to_thread(image_server.SERVER.stop)
     if not SWITCH_LOCK.acquire(blocking=False):
         raise HTTPException(409, "a model switch is in progress")
     GATE.close()
@@ -1492,6 +1675,13 @@ async def openai_proxy(path: str, request: Request):
             body_obj, memory_headers = await _prepare_chat(body_obj, ctx)
             raw = json.dumps(body_obj).encode("utf-8")
     resolved = await asyncio.to_thread(model_router.resolve, _requested_model(raw))
+    if IMAGE_GPU.parked and not STATE.model_id:
+        if resolved is None:
+            await IMAGE_GPU.reload_now()   # a chat message wakes the parked chat model now
+        else:
+            IMAGE_GPU.cancel_timer()       # this request loads its own model
+            IMAGE_GPU.parked = None
+            await asyncio.to_thread(image_server.SERVER.stop)
     await _enter_with_model(resolved.model if resolved else None)
     released = False
     handed_off = False  # True once a streaming response owns the release
