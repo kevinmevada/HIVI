@@ -21,6 +21,7 @@ def fresh_store(tmp_path, monkeypatch):
     monkeypatch.setattr(memory_engine, "EXTRACTOR", memory_engine.Extractor())
     monkeypatch.setattr(memory_engine, "RECALL", memory_engine.Recall())
     monkeypatch.setattr(backups, "_LAST", {"at": None, "path": None, "error": None})
+    server._PROFILES.clear()
     yield st
     st.close()
     pm.set_store(None)
@@ -236,10 +237,14 @@ async def test_prepare_chat_builds_prompt_with_memory_mood_and_recall(fresh_stor
     ctx = {"hivi_chat": True, "chat_id": "c1", "title": None, "temporary": False, "internal": False}
     out, headers = await server._prepare_chat(body, ctx)
     system = out["messages"][0]["content"]
+    turn = out["messages"][1]["content"]
     assert out["messages"][0]["role"] == "system" and len(out["messages"]) == 2
     assert system.startswith("You are HIVI.")
     assert "Lakshya" in system and "Roommate is Ayush" in system
-    assert "beta42" in system and headers["X-HIVI-Recalled"] == "1"
+    # per-turn signals live in the newest message, so the system prompt can stay cached
+    assert "beta42" not in system and "Right now:" not in system
+    assert turn.startswith("<hivi_context>") and "beta42" in turn and "Right now:" in turn
+    assert turn.endswith("pareshan hoon") and headers["X-HIVI-Recalled"] == "1"
     assert headers["X-HIVI-Mood"].startswith("stressed")
     assert headers["X-HIVI-Memory"] == "on"
     # temporary chat: nothing personal, nothing recalled

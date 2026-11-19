@@ -147,7 +147,7 @@ def test_llama_args_moe_and_gpt_oss_flags():
     moe = runtime.build_llama_args(
         _entry("/m/Qwen3-Coder-30B-A3B.gguf"), llama=Path("llama-server"), threads=8
     )
-    assert "--cpu-moe" in moe and moe[moe.index("-c") + 1] == "4096"
+    assert "--cpu-moe" in moe and moe[moe.index("-c") + 1] == str(runtime.MOE_CTX)
     oss = runtime.build_llama_args(_entry("/m/gpt-oss-20b.gguf"), llama=Path("llama-server"), threads=8)
     assert oss[oss.index("--reasoning") + 1] == "on"
     assert str(runtime.BACKEND_PORT) in oss
@@ -162,7 +162,7 @@ def test_uncensored_llama_args_keep_model_defaults():
         _entry("/m/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q5_K_P.gguf", uncensored=True),
         llama=Path("llama-server"), threads=8)
     assert "--reasoning" not in unc  # thinking decided per request by HAIE
-    assert unc[unc.index("-c") + 1] == "16384"
+    assert unc[unc.index("-c") + 1] == str(runtime.MOE_CTX)  # 35B-A3B is MoE
     assert "--repeat-penalty" not in unc and "--frequency-penalty" not in unc
     oss = runtime.build_llama_args(_entry("/m/gpt-oss-20b-abliterated-q8_0.gguf", uncensored=True),
                                    llama=Path("llama-server"), threads=8)
@@ -181,10 +181,26 @@ def test_colibri_args_use_backend_port():
     assert args[:3] == ["py", "coli", "serve"]
     assert args[args.index("--port") + 1] == str(runtime.BACKEND_PORT)
     assert args[args.index("--policy") + 1] == "quality"  # keeps quantization + exact routing
-    assert args[args.index("--ctx") + 1] == "8192"
-    unc = runtime.build_colibri_args(Path("m.colibri"), coli=Path("coli"), python="py",
-                                     uncensored=True)
-    assert unc[unc.index("--ctx") + 1] == "16384"
+    assert args[args.index("--ctx") + 1] == str(runtime.DEFAULT_CTX)
+    big = runtime.build_colibri_args(Path("m.colibri"), coli=Path("coli"), python="py", ctx=32768)
+    assert big[big.index("--ctx") + 1] == "32768"
+
+
+def test_context_for_one_source_with_env_overrides(monkeypatch):
+    dense = _entry("/m/qwen3-8b.gguf")
+    moe = _entry("/m/Qwen3-Coder-30B-A3B.gguf")
+    assert runtime.context_for(dense) == runtime.DEFAULT_CTX
+    assert runtime.context_for(moe) == runtime.MOE_CTX
+    args = runtime.build_llama_args(dense, llama=Path("llama-server"), threads=8)
+    assert args[args.index("-c") + 1] == str(runtime.context_for(dense))
+    assert args[args.index("-b") + 1] == "2048" and args[args.index("-ub") + 1] == "512"
+    monkeypatch.setenv("HIVI_CTX", "32768")
+    assert runtime.context_for(dense) == 32768
+    monkeypatch.setenv("HIVI_CTX", "999")       # below the floor
+    assert runtime.context_for(dense) == 2048
+    monkeypatch.setenv("HIVI_UBATCH", "256")
+    args = runtime.build_llama_args(dense, llama=Path("llama-server"), threads=8)
+    assert args[args.index("-ub") + 1] == "256"
 
 
 # ---- llama router mode --------------------------------------------------------
@@ -195,7 +211,7 @@ def test_preset_options_translate_cli_args():
         runtime.build_llama_args(m, llama=Path("llama-server"), threads=8)))
     assert opts["model"] == "C:/M/qwen.gguf"
     assert opts["mmproj"] == "C:/M/mmproj-F16.gguf"
-    assert opts["jinja"] == "true" and opts["c"] == "8192" and opts["fa"] == "on"
+    assert opts["jinja"] == "true" and opts["c"] == str(runtime.DEFAULT_CTX) and opts["fa"] == "on"
     assert "host" not in opts and "port" not in opts  # the router owns these
 
 

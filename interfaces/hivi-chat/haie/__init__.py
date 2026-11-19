@@ -5,6 +5,8 @@ import os
 import time
 from typing import Any
 
+import pasted
+
 from .adapters import apply_params_to_body
 from .eval_store import log_plan
 from .fast_path import extract_last_user, try_fast_path
@@ -135,6 +137,12 @@ def plan_request(
 ) -> tuple[dict[str, Any], PlanMeta]:
     """Understand the turn and inject dynamic sampling params (client values win)."""
     user = extract_last_user(body)
+    # Attached documents (pasted.py) are material, not the request: classify the
+    # user's own words, and only fall back to the start of the material when the
+    # message is just an attachment.
+    docs, question = pasted.split(user)
+    if docs:
+        user = question.strip() or docs[0].text[:1500]
     messages = body.get("messages") if isinstance(body.get("messages"), list) else []
     history_len = len(messages)
 
@@ -175,6 +183,9 @@ def plan_request(
             if result.total_ms is not None:
                 classify_ms = result.total_ms
     understanding = _enrich_from_text(understanding, user)
+    if docs and understanding.length == "short":
+        # An answer about a long attachment is rarely a one-liner.
+        understanding.length = "medium"
 
     params = derive_params(understanding)
     if uncensored:

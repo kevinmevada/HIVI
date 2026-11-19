@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+import pasted
 import personal_memory as pm
 from haie.harmony import extract_final_text
 
@@ -250,6 +251,10 @@ class Extractor:
         store = self._store_fn()
         if not store.setting("memory_enabled") or not store.setting("auto_memory"):
             return None
+        # The model only ever sees the first 2500 characters (_exchange_text); matching
+        # a 200K-character paste against every memory would stall the event loop.
+        # Attached documents are what the user pasted, not facts about the user.
+        user_text = pasted.question_of(user_text or "")[:2500]
         if len(pm.tokens(user_text)) < 2:
             return None
         if wait_idle is not None:

@@ -119,7 +119,7 @@ def test_colibri_gets_thinking_as_top_level_fields():
     out, meta = plan_request(hard, engine="colibri", backend_base=DEAD_BACKEND, model_id=None)
     if out["enable_thinking"]:
         assert out["reasoning_effort"] in ("low", "medium", "high")
-        assert out["max_tokens"] <= 6144  # coli serve runs at --ctx 8192
+        assert out["max_tokens"] <= 6144  # HAIE's Colibrì ceiling
 
     # the UI's refusal retry sends chat_template_kwargs; Colibrì needs it top-level
     retry = dict(easy, chat_template_kwargs={"enable_thinking": True})

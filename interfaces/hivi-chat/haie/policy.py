@@ -155,7 +155,7 @@ def derive_params(u: Understanding) -> SampleParams:
 # decision into the model's working range instead of HAIE's 0.05-0.35 coding band,
 # which pushed these builds back into residual refusals. Explicit client values
 # still win (apply_params_to_body only fills unset fields).
-UNCENSORED_MAX_TOKENS_CEILING = 12288  # thinking + answer; llama ctx is 16K for these
+UNCENSORED_MAX_TOKENS_CEILING = 12288  # thinking + answer; the proxy caps it to the room left in ctx
 
 # Thinking headroom on top of HAIE's answer budget, by the effort HAIE chose.
 _THINK_HEADROOM = {"none": 1024, "low": 1536, "medium": 3072, "high": 6144}
@@ -195,7 +195,7 @@ def wants_thinking(p: SampleParams, u: Understanding) -> bool:
     return p.reasoning_effort == "high" or u.normalized().complexity >= 4
 
 
-COLIBRI_MAX_TOKENS_CEILING = 6144  # coli serve runs these at --ctx 8192
+COLIBRI_MAX_TOKENS_CEILING = 6144  # answer + thinking; the proxy also caps it to the room left in --ctx
 
 
 def adapt_thinking(p: SampleParams, u: Understanding) -> SampleParams:

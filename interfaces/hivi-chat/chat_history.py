@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pasted
 from hivi_paths import paths
 
 _SCHEMA = """
@@ -53,7 +54,8 @@ def _strip_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def make_title(messages: list[dict[str, Any]]) -> str:
     for m in messages:
         if isinstance(m, dict) and m.get("role") == "user":
-            t = re.sub(r"\s+", " ", _text_of(m)).strip()
+            docs, question = pasted.split(_text_of(m))
+            t = re.sub(r"\s+", " ", question).strip() or (docs[0].name if docs else "")
             if t:
                 return (t[:57] + "…") if len(t) > 60 else t
     return "New chat"

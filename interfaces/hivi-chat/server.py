@@ -21,12 +21,15 @@ from typing import Any
 import aux_services
 import backups
 import chat_history
+import context_budget
 import gpu_doctor
 import httpx
 import image_gen
 import image_server
+import long_answers
 import memory_engine
 import model_router
+import pasted
 import personal_memory as pm
 import soul
 import uvicorn
@@ -72,6 +75,25 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="HIVI", lifespan=_lifespan)
+
+
+class _MemoryEditsRefreshProfiles:
+    """Edits on the memory screen reach open chats on their next message.
+
+    Plain ASGI (not @app.middleware) so streamed chat replies pass straight through.
+    """
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (scope["type"] == "http" and scope.get("method") != "GET"
+                and str(scope.get("path", "")).startswith("/api/memory")):
+            _PROFILES.clear()
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(_MemoryEditsRefreshProfiles)
 _TIMEOUT = httpx.Timeout(600.0, connect=30.0)
 _HAIE_EXPOSE = (
     "X-HIVI-HAIE-Path, X-HIVI-HAIE-Intents, X-HIVI-HAIE-Complexity, "
@@ -79,7 +101,9 @@ _HAIE_EXPOSE = (
     "X-HIVI-HAIE-Temp, X-HIVI-HAIE-Max-Tokens, X-HIVI-HAIE-Think, "
     "X-HIVI-Adaptive-Bucket, X-HIVI-Adaptive-Temp, "
     "X-HIVI-Adaptive-Max-Tokens, X-HIVI-Adaptive-Think, "
-    "X-HIVI-Memory, X-HIVI-Mood, X-HIVI-Recalled"
+    "X-HIVI-Memory, X-HIVI-Mood, X-HIVI-Recalled, X-HIVI-Context, "
+    "X-HIVI-Context-Dropped, X-HIVI-Context-Thinking, X-HIVI-Context-Too-Long, "
+    "X-HIVI-Context-Slid"
 )
 # How long a memory (Hindsight) request may wait for a model switch to finish,
 # and how long a switch waits for in-flight memory requests before proceeding.
@@ -234,6 +258,51 @@ _NO_CACHE = {"Cache-Control": "no-cache"}
 @app.get("/")
 def index():
     return FileResponse(HERE / "index.html", headers=_NO_CACHE)
+
+
+_ZIP_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _safe_zip_name(name: str) -> str | None:
+    """A relative path inside the zip; None for anything that could escape it."""
+    parts = [p for p in str(name or "").replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or ":" in p for p in parts):
+        return None
+    return "/".join(parts)[:200]
+
+
+@app.post("/api/files/zip")
+async def api_files_zip(request: Request):
+    """The files of one answer as a .zip (the "Download all" button)."""
+    import io
+    import zipfile
+
+    try:
+        data = await request.json()
+    except ValueError as e:
+        raise HTTPException(400, "expected JSON") from e
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, list) or not files:
+        raise HTTPException(400, "no files")
+    buf = io.BytesIO()
+    total = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files[:200]:
+            if not isinstance(f, dict):
+                continue
+            name = _safe_zip_name(f.get("name", ""))
+            content = f.get("content")
+            if not name or not isinstance(content, str):
+                continue
+            raw = content.encode("utf-8")
+            total += len(raw)
+            if total > _ZIP_MAX_BYTES:
+                raise HTTPException(413, "files too large")
+            zf.writestr(name, raw)
+    if not total:
+        raise HTTPException(400, "no valid files")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="hivi-files.zip"'})
 
 
 @app.get("/api/models")
@@ -1233,6 +1302,7 @@ def _json_reply(text: str, model: str | None) -> JSONResponse:
 
 
 async def _memory_command(kind: str, fact: str, ctx: dict[str, Any]) -> dict[str, Any]:
+    _PROFILES.clear()   # an explicit change shows up in the very next reply
     store = pm.store()
     if not store.setting("memory_enabled"):
         return {"status": "disabled"}
@@ -1253,11 +1323,57 @@ async def _memory_command(kind: str, fact: str, ctx: dict[str, Any]) -> dict[str
             "event": event.to_dict() if removed else None}
 
 
-async def _prepare_chat(body: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
-    """Build HIVI's real system prompt: character, loyalty, profile, recall, mood."""
+# The profile block in the system prompt is frozen per chat: a system prompt that
+# stays identical lets llama.cpp reuse everything it already read (history, long
+# pastes) instead of reading the whole conversation again on every message. New
+# facts learned mid-chat still reach the model through recall (the turn note).
+# Explicit memory edits (commands, the memory screen) clear this.
+_PROFILES: dict[str, str] = {}
+_PROFILES_MAX = 64
+
+
+def _chat_profile(chat_id: str | None, build: Callable[[], str]) -> str:
+    if not chat_id:
+        return build()
+    if chat_id not in _PROFILES:
+        if len(_PROFILES) >= _PROFILES_MAX:
+            _PROFILES.pop(next(iter(_PROFILES)))
+        _PROFILES[chat_id] = build()
+    return _PROFILES[chat_id]
+
+
+def _with_turn_note(msgs: list[Any], note: str) -> list[Any]:
+    """Put the note into the newest user message: after any attached documents,
+    before the user's own words (so the documents keep their cached place)."""
+    if not note or not msgs:
+        return msgs
+    for i in range(len(msgs) - 1, -1, -1):
+        m = msgs[i]
+        if not (isinstance(m, dict) and m.get("role") == "user"):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            cut = pasted.block_end(c)
+            content: Any = f"{c[:cut]}{note}\n\n{c[cut:]}"
+        elif isinstance(c, list):
+            content = [{"type": "text", "text": note}, *c]
+        else:
+            return msgs
+        out = list(msgs)
+        out[i] = {**m, "content": content}
+        return out
+    return msgs
+
+
+async def _prepare_chat(body: dict[str, Any], ctx: dict[str, Any], *,
+                        note: bool = True) -> tuple[dict[str, Any], dict[str, str]]:
+    """Build HIVI's real system prompt (character, loyalty, profile: identical every
+    turn) and a short note for this turn (recall, mood) inside the newest message."""
     store = pm.store()
     settings = await asyncio.to_thread(store.settings)
     user_text = _last_user_text(body)
+    # Mood and recall read the user's own words, not what they pasted.
+    signal_text = context_budget.trim_for_signals(user_text)
     headers: dict[str, str] = {}
     use_memory = bool(settings["memory_enabled"]) and not ctx["temporary"]
     profile = ""
@@ -1265,25 +1381,31 @@ async def _prepare_chat(body: dict[str, Any], ctx: dict[str, Any]) -> tuple[dict
     if use_memory:
         items = await asyncio.to_thread(store.all)
         chosen = pm.profile_memories(items)
-        profile = pm.profile_block(chosen, settings.get("user_name") or "")
-        chosen_ids = {m["id"] for m in chosen}
-        hits = [m for m in await memory_engine.RECALL.for_message(user_text)
-                if m["id"] not in chosen_ids]
-        if hits:
-            recalled = ("Also relevant to this message, from earlier chats:\n"
-                        + "\n".join(f"- {m['text']}" for m in hits))
-            headers["X-HIVI-Recalled"] = str(len(hits))
+
+        def build_profile() -> str:
+            return pm.profile_block(chosen, settings.get("user_name") or "")
+
+        profile = _chat_profile(ctx["chat_id"], build_profile)
+        if note:
+            chosen_ids = {m["id"] for m in chosen}
+            hits = [m for m in await memory_engine.RECALL.for_message(signal_text)
+                    if m["id"] not in chosen_ids and m["text"] not in profile]
+            if hits:
+                recalled = ("Also relevant to this message, from earlier chats:\n"
+                            + "\n".join(f"- {m['text']}" for m in hits))
+                headers["X-HIVI-Recalled"] = str(len(hits))
     elif settings.get("user_name") and not ctx["temporary"]:
         profile = pm.profile_block([], settings["user_name"])
-    mood = soul.read_mood(user_text) if settings["mood_enabled"] else None
+    mood = soul.read_mood(signal_text) if settings["mood_enabled"] and note else None
     if mood is not None and mood.label != "neutral":
         headers["X-HIVI-Mood"] = f"{mood.label} {mood.intensity}"
     client_system = next((m.get("content") for m in body.get("messages", [])
                           if isinstance(m, dict) and m.get("role") == "system"), None)
     base = client_system if isinstance(client_system, str) and client_system.strip() else soul.BASE
-    system = soul.build_system_prompt(profile=profile, recalled=recalled, mood=mood,
-                                      personality=bool(settings["personality"]), base=base)
+    system = soul.build_system_prompt(profile=profile, personality=bool(settings["personality"]),
+                                      base=base)
     msgs = [m for m in body.get("messages", []) if not (isinstance(m, dict) and m.get("role") == "system")]
+    msgs = _with_turn_note(msgs, soul.build_turn_note(recalled=recalled, mood=mood))
     out = dict(body)
     out["messages"] = [{"role": "system", "content": system}, *msgs]
     if use_memory:
@@ -1619,6 +1741,121 @@ async def _enter_with_model(target: ModelEntry | None) -> None:
             raise HTTPException(502, f"could not load {target.name}: {detail}")
 
 
+def _wants_stream(raw: bytes) -> bool:
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(body, dict) and bool(body.get("stream"))
+
+
+# Token calibration. HIVI estimates tokens without the model (fast, errs high). If
+# llama.cpp still reports a prompt bigger than the window (an unusual tokenizer),
+# the real ratio is learned per model and the budget shrinks to match from then on.
+_TOKEN_SCALE: dict[str, float] = {}
+
+
+def _too_long_text(fit: Any) -> str:
+    return context_budget.too_long_reply(
+        fit, STATE.name, window=STATE.context_size,
+        scale=_TOKEN_SCALE.get(STATE.model_id or "", 1.0))
+
+
+def _fit_window() -> int | None:
+    ctx = STATE.context_size
+    if not ctx:
+        return None
+    return int(ctx / _TOKEN_SCALE.get(STATE.model_id or "", 1.0))
+
+
+def _calibrate(body: dict[str, Any], real_prompt: int) -> None:
+    est = context_budget.prompt_tokens(body.get("messages") or [])
+    if est <= 0 or real_prompt <= 0:
+        return
+    key = STATE.model_id or ""
+    scale = max(1.0, real_prompt / est) * 1.08
+    _TOKEN_SCALE[key] = max(_TOKEN_SCALE.get(key, 1.0), min(scale, 4.0))
+    print(f"HIVI context: {key} counts {real_prompt} tokens where HIVI estimated {est}; "
+          f"budget scaled by {_TOKEN_SCALE[key]:.2f}")
+
+
+# Answers that are code or long writing get the whole free window (see fit_request).
+_FILL_INTENTS = ("coding", "writing", "architecture")
+
+
+def _fills_window(extra: dict[str, str], request: Request) -> bool:
+    if request.headers.get("x-hivi-continue") == "1":
+        return True
+    intents = (extra.get("X-HIVI-HAIE-Intents") or "").split(",")
+    return any(i.strip() in _FILL_INTENTS for i in intents)
+
+
+def _fit_context(raw: bytes, fill: bool = False,
+                 continuing: bool = False) -> tuple[bytes, context_budget.Fit | None]:
+    """Fit the request inside the loaded model's window (see context_budget)."""
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return raw, None
+    if not isinstance(body, dict):
+        return raw, None
+    fit = context_budget.fit_request(body, _fit_window(), fill=fill, continuing=continuing)
+    if fit is None:
+        return raw, None
+    if fit.dropped or fit.thinking_off:
+        print(f"HIVI context: {fit.prompt}/{fit.ctx} tokens; " + "; ".join(fit.notes))
+    return json.dumps(body).encode("utf-8"), fit
+
+
+async def _prefill(raw: bytes, ctx: dict[str, Any], request: Request) -> Response:
+    """Read ahead: have llama.cpp read an attached document while the user types.
+
+    The UI sends the conversation as it will be (history + the attachment, no
+    question yet) as soon as a long paste or file is attached. llama.cpp keeps what
+    it read in its prompt cache, so when the real message arrives only the question
+    is new and the answer starts almost at once. This is the local version of how
+    Claude feels instant on long input: the reading is already done.
+
+    Always answers 204; best effort. Skipped when no llama.cpp model is ready, while
+    an image is drawing, or when it would not fit the window.
+    """
+    if (STATE.engine != "llama" or STATE.status != "ready" or not STATE.model_id
+            or IMAGE_GPU.busy or IMAGE_GPU.parked):
+        return Response(status_code=204, headers={"X-HIVI-Prefill": "skipped"})
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return Response(status_code=204, headers={"X-HIVI-Prefill": "skipped"})
+    if not isinstance(body, dict):
+        return Response(status_code=204, headers={"X-HIVI-Prefill": "skipped"})
+    memory_engine.EXTRACTOR.cancel()   # the GPU is better spent reading
+    if ctx["hivi_chat"]:
+        body, _ = await _prepare_chat(body, ctx, note=False)
+    fit = context_budget.fit_request(body, STATE.context_size)
+    if fit is None or fit.too_long:
+        return Response(status_code=204, headers={"X-HIVI-Prefill": "skipped"})
+    current = await asyncio.to_thread(_current_backend_model)
+    body.update({"model": current or body.get("model") or "local", "stream": False,
+                 "max_tokens": 1, "temperature": 0.0, "cache_prompt": True})
+    body.pop("stream_options", None)
+    # Background: a model switch never waits for a read-ahead.
+    if not await GATE.enter(5.0, background=True):
+        return Response(status_code=204, headers={"X-HIVI-Prefill": "skipped"})
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.post(f"{BACKEND_BASE}/v1/chat/completions", json=body)
+        ok = r.status_code < 400
+    except httpx.HTTPError:
+        ok = False
+    finally:
+        GATE.leave(background=True)
+    secs = time.perf_counter() - t0
+    return Response(status_code=204, headers={"X-HIVI-Prefill": "read" if ok else "failed",
+                                              "X-HIVI-Prefill-Seconds": f"{secs:.1f}",
+                                              "X-HIVI-Prefill-Tokens": str(fit.prompt)})
+
+
 def _requested_model(raw: bytes) -> str | None:
     try:
         body = json.loads(raw.decode("utf-8"))
@@ -1654,6 +1891,8 @@ async def openai_proxy(path: str, request: Request):
     speed_started = time.perf_counter()
     raw = await request.body()
     ctx = _chat_context(request)
+    if request.headers.get("x-hivi-prefill") == "1" and path.endswith("chat/completions"):
+        return await _prefill(raw, ctx, request)
     user_text = ""
     memory_headers: dict[str, str] = {}
     if ctx["hivi_chat"] and path.endswith("chat/completions"):
@@ -1662,8 +1901,9 @@ async def openai_proxy(path: str, request: Request):
         except ValueError:
             body_obj = None
         if isinstance(body_obj, dict):
-            user_text = _last_user_text(body_obj)
-            command = pm.parse_command(user_text) if not ctx["temporary"] else None
+            continuing = request.headers.get("x-hivi-continue") == "1"
+            user_text = "" if continuing else _last_user_text(body_obj)
+            command = pm.parse_command(user_text) if not ctx["temporary"] and user_text else None
             if command:
                 memory_engine.EXTRACTOR.cancel()
                 result = await _memory_command(command[0], command[1], ctx)
@@ -1705,6 +1945,22 @@ async def openai_proxy(path: str, request: Request):
             skip = request.headers.get("x-hivi-haie-skip", "").strip() in ("1", "true", "yes")
             if not skip:
                 adapted, extra = await asyncio.to_thread(_adapt_chat_body, raw)
+        pre_fit = adapted
+        fills = _fills_window(extra, request)
+        continuing_req = request.headers.get("x-hivi-continue") == "1"
+        if path.endswith("chat/completions"):
+            adapted, fit = await asyncio.to_thread(_fit_context, adapted, fills, continuing_req)
+            if fit is not None:
+                extra.update(fit.headers())
+                if fit.max_tokens:
+                    extra["X-HIVI-HAIE-Max-Tokens"] = str(fit.max_tokens)
+                if fit.thinking_off:
+                    extra["X-HIVI-HAIE-Thinking"] = "off"
+                if fit.too_long:
+                    reply = _too_long_text(fit)
+                    if _wants_stream(adapted):
+                        return _sse_text(reply, STATE.model_id, {**extra, "X-HIVI-HAIE-Path": "context"})
+                    return _json_reply(reply, STATE.model_id)
         if resolved is not None:
             extra["X-HIVI-Model"] = resolved.model.id
             extra["X-HIVI-Model-Via"] = resolved.via
@@ -1722,6 +1978,26 @@ async def openai_proxy(path: str, request: Request):
             wants_stream = bool(json.loads(adapted.decode("utf-8")).get("stream"))
         except Exception:
             wants_stream = False
+        # Keep going past the length limit unless the client capped the answer itself.
+        go_on = (path.endswith("chat/completions") and not _client_capped(raw)
+                 and request.headers.get("x-hivi-no-continue") != "1")
+        if go_on:
+            try:
+                base = json.loads(pre_fit.decode("utf-8"))
+            except ValueError:
+                base = None
+            if isinstance(base, dict):
+                extra["X-HIVI-Continues"] = "server"
+                if wants_stream:
+                    response = await _stream_chat(
+                        request, f"v1/{path}", base, adapted, extra, on_close=release,
+                        speed_started=speed_started,
+                        speed_model=STATE.name or STATE.model_id or _requested_model(raw),
+                        on_reply=on_reply, fills=fills)
+                    handed_off = True
+                    return response
+                return await _buffered_chat(request, f"v1/{path}", base, adapted, extra,
+                                            on_reply=on_reply, fills=fills)
         if wants_stream:
             # The stream releases the gate when the last chunk is sent.
             response = await _proxy_stream(
@@ -1750,6 +2026,250 @@ async def openai_proxy(path: str, request: Request):
     finally:
         if not handed_off:
             release()  # idempotent: safe if the stream already released on failure
+
+
+def _client_capped(raw: bytes) -> bool:
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return True
+    return not isinstance(body, dict) or body.get("max_tokens") is not None \
+        or body.get("max_completion_tokens") is not None
+
+
+def _refit(base: dict[str, Any], *, fills: bool, continuing: bool) -> tuple[dict[str, Any], Any]:
+    body = json.loads(json.dumps(base))   # a fresh copy: fit trims in place
+    fit = context_budget.fit_request(body, _fit_window(), fill=fills or continuing,
+                                     continuing=continuing)
+    return body, fit
+
+
+async def _body_of(resp: Response) -> bytes:
+    it = getattr(resp, "body_iterator", None)
+    if it is None:
+        return bytes(resp.body or b"")
+    return b"".join([c async for c in it])
+
+
+async def _send_fitted(request: Request, path: str, base: dict[str, Any], first: bytes | None,
+                       *, fills: bool, continuing: bool, stream: bool) -> Response | None:
+    """Send a chat request (through _proxy_stream / _proxy_buffered). If llama.cpp says
+    the prompt is bigger than the window, learn the real token ratio, fit again and
+    resend (twice at most). None when it cannot fit at all."""
+    payload = first
+    sent: dict[str, Any] | None = json.loads(first) if first else None
+    for _ in range(3):
+        if payload is None:
+            sent, fit = await asyncio.to_thread(_refit, base, fills=fills, continuing=continuing)
+            if fit is not None and fit.too_long:
+                return None
+            sent["stream"] = stream
+            payload = json.dumps(sent).encode("utf-8")
+        resp = await (_proxy_stream(request, path, payload) if stream
+                      else _proxy_buffered(request, path, payload))
+        if resp.status_code != 400:
+            return resp
+        raw = await _body_of(resp)
+        over = long_answers.context_exceeded(400, raw)
+        if not over or sent is None:
+            return Response(raw, status_code=400, media_type="application/json")
+        _calibrate(sent, over[0])
+        payload = None
+    return None
+
+
+def _event_bytes(obj: Any) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode()
+
+
+async def _stream_chat(request: Request, path: str, base: dict[str, Any], first: bytes,
+                       extra_headers: dict[str, str], *, on_close: Callable[[], None],
+                       speed_started: float, speed_model: str | None,
+                       on_reply: Callable[[str], None] | None, fills: bool) -> Response:
+    """Stream a chat reply and keep it going until the model ends it (long_answers)."""
+    try:
+        upstream = await _send_fitted(request, path, base, first, fills=fills,
+                                      continuing=False, stream=True)
+    except BaseException:
+        on_close()
+        raise
+    if upstream is None:
+        # Bigger than the window even after measuring the real token count.
+        on_close()
+        _, fit = await asyncio.to_thread(_refit, base, fills=fills, continuing=False)
+        if fit is None:
+            raise HTTPException(502, "prompt does not fit the context window")
+        h = {**extra_headers, **fit.headers(), "X-HIVI-HAIE-Path": "context"}
+        return _sse_text(_too_long_text(fit), STATE.model_id, h)
+    if upstream.status_code >= 400:
+        detail = await _body_of(upstream)
+        on_close()
+        return Response(detail, status_code=upstream.status_code,
+                        media_type="application/json", headers=extra_headers)
+    tracker = _SpeedTracker(speed_started, speed_model, STATE.engine)
+    mode = "prefill" if STATE.engine == "llama" else "ask"
+
+    async def chunks_of(resp: Response):
+        it = getattr(resp, "body_iterator", None)
+        if it is None:
+            yield bytes(resp.body or b"")
+            return
+        try:
+            async for c in it:
+                yield c if isinstance(c, bytes) else str(c).encode("utf-8")
+        finally:
+            closer = getattr(it, "aclose", None)
+            if closer:
+                await closer()
+
+    async def events():
+        nonlocal upstream, mode
+        answer = ""
+        parts = 0
+        try:
+            while True:
+                got = ""
+                finish = None
+                # "ask" mode: hold the first characters of a part until a code fence the
+                # model reopened can be seen (and dropped).
+                holding = bool(parts) and mode == "ask"
+                pending = ""
+                template: dict | None = None
+                parser = long_answers.SSEEvents()
+
+                def out(obj: dict) -> bytes:
+                    data = _event_bytes(obj)
+                    tracker.feed(data)
+                    return data
+
+                async for chunk in chunks_of(upstream):
+                    for data in [*parser.feed(chunk)]:
+                        if data == "[DONE]":
+                            continue
+                        try:
+                            obj = json.loads(data)
+                        except ValueError:
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        choice = (obj.get("choices") or [{}])[0]
+                        if not isinstance(choice, dict):
+                            choice = {}
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(piece, str) and piece:
+                            got += piece
+                        fr = choice.get("finish_reason")
+                        if fr:
+                            finish = fr
+                            choice["finish_reason"] = None   # decided once the answer is whole
+                        if holding and isinstance(piece, str) and piece:
+                            template = template or obj
+                            pending += piece
+                            if len(pending) < 60 and "\n" not in pending:
+                                continue
+                            delta["content"] = long_answers.join(answer, pending, "ask")[len(answer):]
+                            holding = False
+                            pending = ""
+                        yield out(obj)
+                for data in parser.rest():
+                    if data != "[DONE]":
+                        try:
+                            yield out(json.loads(data))
+                        except ValueError:
+                            pass
+                if holding and pending and template is not None:
+                    t = json.loads(json.dumps(template))
+                    t["choices"][0]["delta"] = {"content": long_answers.join(answer, pending, "ask")[len(answer):]}
+                    yield out(t)
+                answer = long_answers.join(answer, got, mode)
+                go_on = (finish == "length" and bool(got.strip()) and parts < long_answers.MAX_PARTS
+                         and not long_answers.looping(answer))
+                end = {"object": "chat.completion.chunk", "model": STATE.model_id or "hivi",
+                       "choices": [{"index": 0, "delta": {}, "finish_reason": finish or "stop"}]}
+                if not go_on:
+                    yield out(end)
+                    yield b"data: [DONE]\n\n"
+                    return
+                parts += 1
+                print(f"HIVI long answer: part {parts + 1} ({len(answer):,} characters so far, {mode})")
+                nxt = None
+                for attempt in ([mode, "ask"] if mode == "prefill" else [mode]):
+                    cbase = long_answers.continuation_body(base, answer, attempt)
+                    resp = await _send_fitted(request, path, cbase, None, fills=True,
+                                              continuing=True, stream=True)
+                    if resp is not None and resp.status_code < 400:
+                        nxt, mode = resp, attempt
+                        break
+                    raw = b"" if resp is None else await _body_of(resp)
+                    if resp is None or not long_answers.prefill_refused(resp.status_code, raw):
+                        break
+                if nxt is None:
+                    end["choices"][0]["finish_reason"] = "length"
+                    yield out(end)
+                    yield b"data: [DONE]\n\n"
+                    return
+                upstream = nxt
+        finally:
+            tracker.finish()
+            on_close()
+            if on_reply:
+                on_reply(answer)
+
+    headers = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+               "Access-Control-Expose-Headers": _HAIE_EXPOSE, **extra_headers}
+    return StreamingResponse(events(), media_type="text/event-stream", headers=headers)
+
+
+async def _buffered_chat(request: Request, path: str, base: dict[str, Any], first: bytes,
+                         extra_headers: dict[str, str], *,
+                         on_reply: Callable[[str], None] | None, fills: bool) -> Response:
+    """Non-streaming version: the parts are joined before the reply is returned."""
+    resp = await _send_fitted(request, path, base, first, fills=fills, continuing=False,
+                              stream=False)
+    if resp is None:
+        _, fit = await asyncio.to_thread(_refit, base, fills=fills, continuing=False)
+        if fit is None:
+            return JSONResponse({"error": "prompt does not fit the context window"}, 502)
+        return _json_reply(_too_long_text(fit), STATE.model_id)
+    raw = await _body_of(resp)
+    if resp.status_code >= 400:
+        return Response(raw, status_code=resp.status_code, media_type="application/json",
+                        headers=extra_headers)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return Response(raw, status_code=resp.status_code, headers=extra_headers)
+    answer = ""
+    mode = "prefill" if STATE.engine == "llama" else "ask"
+    for part in range(long_answers.MAX_PARTS + 1):
+        choice = (data.get("choices") or [{}])[0]
+        got = str((choice.get("message") or {}).get("content") or "")
+        answer = long_answers.join(answer, got, mode)
+        if (choice.get("finish_reason") != "length" or not got.strip()
+                or part == long_answers.MAX_PARTS or long_answers.looping(answer)):
+            break
+        nxt_data = None
+        for attempt in ([mode, "ask"] if mode == "prefill" else [mode]):
+            cbase = long_answers.continuation_body(base, answer, attempt)
+            cbase["stream"] = False
+            nxt = await _send_fitted(request, path, cbase, None, fills=True, continuing=True,
+                                     stream=False)
+            body = b"" if nxt is None else await _body_of(nxt)
+            if nxt is not None and nxt.status_code < 400:
+                nxt_data, mode = json.loads(body), attempt
+                break
+            if nxt is None or not long_answers.prefill_refused(nxt.status_code, body):
+                break
+        if nxt_data is None:
+            break
+        data = nxt_data
+    choice = (data.get("choices") or [{}])[0]
+    choice.setdefault("message", {})["content"] = answer
+    data["choices"] = [choice]
+    if on_reply:
+        on_reply(answer)
+    return JSONResponse(data, headers=extra_headers)
 
 
 async def _active_models_only(request: Request) -> Response:

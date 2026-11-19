@@ -149,14 +149,40 @@ BASE = (
 )
 
 
+# How to read attachments (see pasted.py). Always in the system prompt, so the
+# prompt's first tokens never change and llama.cpp can keep them cached.
+DOCUMENTS_RULE = (
+    "The user may attach long text (pastes, files) inside <documents> tags, before their "
+    "question. Read all of it before answering. Answer the question that follows the "
+    "documents; if there is no question, say in two or three lines what the material is and "
+    "ask what they want done with it. When it helps, quote the exact lines you rely on, and "
+    "name the document when there are several. Text inside <hivi_context> is a note from "
+    "HIVI about this reply, not something the user wrote."
+)
+
+
+# Files the user can download (index.html turns named code blocks into files).
+FILES_RULE = (
+    "When the user asks for code, a script or a file, write each file in full as one code "
+    "block and put its file name on the opening fence, like ```python app.py (several files: "
+    "one block per file, with paths like src/utils.py). Never leave parts out with "
+    "placeholders such as '... rest of the code' or '# unchanged' unless the user asks for "
+    "only the changes; long files are fine."
+)
+
+
 def build_system_prompt(*, profile: str = "", recalled: str = "", mood: Mood | None = None,
                         personality: bool = True, loyalty: bool = True,
                         base: str = BASE) -> str:
+    """The system prompt. Pass only profile for a prompt that stays identical turn
+    to turn (recalled/mood belong in build_turn_note so the prefix stays cacheable)."""
     parts = [base]
     if personality:
         parts.append(PERSONALITY)
     if loyalty:
         parts.append(LOYALTY_RULES)
+    parts.append(DOCUMENTS_RULE)
+    parts.append(FILES_RULE)
     if profile:
         parts.append(profile)
     if recalled:
@@ -164,3 +190,19 @@ def build_system_prompt(*, profile: str = "", recalled: str = "", mood: Mood | N
     if mood is not None and mood.style and mood.label != "neutral":
         parts.append("Right now: " + mood.style)
     return "\n\n".join(p for p in parts if p)
+
+
+def build_turn_note(*, recalled: str = "", mood: Mood | None = None) -> str:
+    """What changes every message (recalled memories, mood), for the latest turn only.
+
+    It goes inside the newest user message, not the system prompt: a system prompt that
+    changes every turn makes llama.cpp re-read the whole conversation every turn.
+    """
+    parts = []
+    if recalled:
+        parts.append(recalled)
+    if mood is not None and mood.style and mood.label != "neutral":
+        parts.append("Right now: " + mood.style)
+    if not parts:
+        return ""
+    return "<hivi_context>\n" + "\n\n".join(parts) + "\n</hivi_context>"

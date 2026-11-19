@@ -48,10 +48,29 @@ def _reset_caches():
     server._PROBE_TASKS.clear()
 
 
+def _cancel_probe_tasks():
+    for task in list(server._PROBE_TASKS.values()):
+        if not task.done():
+            task.cancel()
+
+
+def _idle_status() -> dict:
+    """What status_dict() says with no model loaded, without touching the network."""
+    return {"model_id": None, "name": None, "engine": None, "status": "idle", "detail": "",
+            "pid": None, "healthy": False, "router": False, "resident": [], "timings": {},
+            "context_size": None, "speed": None, "vision": False, "switching": False}
+
+
 @pytest.fixture(autouse=True)
-def reset_health_cache():
+def reset_health_cache(monkeypatch):
+    # These tests are about the GPU readings: the model side is pinned to "idle"
+    # so whatever other tests left in STATE can't add warnings or real backend
+    # probes (status_dict() calls the backend when a model is "ready").
+    monkeypatch.setattr(server, "status_dict", _idle_status)
+    _cancel_probe_tasks()
     _reset_caches()
     yield
+    _cancel_probe_tasks()
     _reset_caches()
 
 

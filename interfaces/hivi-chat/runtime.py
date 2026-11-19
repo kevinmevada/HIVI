@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import gguf_context
 from hivi_paths import paths
 from registry import ModelEntry
 
@@ -383,6 +384,11 @@ def _wait_ready(seconds: float = READY_TIMEOUT_S) -> bool:
 # Command lines (pure functions — unit tested)
 # --------------------------------------------------------------------------- #
 
+def _ubatch() -> str:
+    v = os.environ.get("HIVI_UBATCH", "").strip()
+    return v if v.isdigit() and 64 <= int(v) <= 2048 else "512"
+
+
 def _fit_target_mib() -> str:
     v = os.environ.get("HIVI_FIT_TARGET_MIB", "").strip()
     return v if v.isdigit() and int(v) >= 128 else "512"
@@ -393,18 +399,57 @@ def _set_ctx(args: list[str], ctx: int) -> None:
     args[i + 1] = str(ctx)
 
 
+# Context window (prompt + answer, in tokens). One place decides it, so the
+# launch flags, STATE.context_size and the proxy's prompt budget always agree.
+# Big by default (memory is spent for room): 32K for dense models, 64K for MoE
+# models (experts sit in RAM with --cpu-moe, their KV cache is small), but never
+# past what the model was trained on (read from the GGUF), where answers degrade.
+# Answers longer than the window still finish: the chat slides it (context_budget).
+DEFAULT_CTX = 32768
+MOE_CTX = 65536
+_MOE_MARKERS = ("qwen3-coder-30b", "30b-a3b", "35b-a3b", "-a3b", "-a22b", "moe")
+
+
+def _env_ctx(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw.isdigit():
+        return None
+    return max(2048, min(int(raw), 262144))
+
+
+def context_for(model: ModelEntry) -> int:
+    """Tokens of context the backend runs this model with.
+
+    HIVI_CTX overrides llama models, HIVI_COLIBRI_CTX Colibrì ones (set either to
+    use less memory, or to go past the defaults).
+    """
+    engine = getattr(model, "engine", "llama")
+    env = _env_ctx("HIVI_COLIBRI_CTX" if engine == "colibri" else "HIVI_CTX")
+    if env:
+        return env
+    path = getattr(model, "path", "")
+    text = f"{path} {getattr(model, 'id', '')}".lower()
+    want = MOE_CTX if any(m in text for m in _MOE_MARKERS) else DEFAULT_CTX
+    trained = gguf_context.trained_context(path)
+    if trained and trained >= 2048:
+        return min(want, trained)
+    return want
+
+
 def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[str]:
     args = [
         str(llama),
         "-m", model.path,
         "--host", BACKEND_HOST,
         "--port", str(BACKEND_PORT),
-        "-c", "8192",
+        "-c", str(context_for(model)),
         "-np", "1",
         "-t", str(threads),
         "-tb", str(threads),
-        "-b", "512",
-        "-ub", "256",
+        # Prompt reading speed: bigger batches read a long paste several times
+        # faster (llama.cpp's own defaults). HIVI_UBATCH lowers it if VRAM is tight.
+        "-b", "2048",
+        "-ub", _ubatch(),
         "--fit", "on",
         # MiB of VRAM --fit leaves free. Lower it (e.g. 256) to put more of the
         # model on the GPU; scripts/gpu_check.py says when VRAM sits unused.
@@ -417,9 +462,7 @@ def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[st
     # Uncensored builds run with the model's own defaults: no extra penalties,
     # no forced reasoning-off. Their refusal removal is measured under the stock
     # template, and these overrides pushed them back into refusing (2026-11-11).
-    if model.uncensored:
-        _set_ctx(args, 16384)  # thinking on: room for reasoning + the answer
-    else:
+    if not model.uncensored:
         args += ["--repeat-penalty", "1.1", "--frequency-penalty", "0.2"]
     if model.vision_projector_path:
         args += ["--mmproj", model.vision_projector_path]
@@ -441,20 +484,17 @@ def build_llama_args(model: ModelEntry, *, llama: Path, threads: int) -> list[st
     elif not model.uncensored:
         args += ["--reasoning", "off"]
     # (uncensored non-gpt-oss: leave reasoning at the model default, i.e. thinking on)
-    # MoE-friendly: keep experts in system RAM on 8GB VRAM; trim ctx for speed
+    # MoE-friendly: keep experts in system RAM on 8GB VRAM (context: context_for)
     if "deepseek-coder-v2" in path_l:
         args += ["--cpu-moe", "--moe-cache-mib", "1536"]
-        if not model.uncensored:
-            _set_ctx(args, 4096)
     if "qwen3-coder-30b" in path_l or "30b-a3b" in path_l or "30b-a3b" in id_l:
         args += ["--cpu-moe", "--moe-cache-mib", "3072"]
-        if not model.uncensored:  # thinking needs the 16K set above
-            _set_ctx(args, 4096)
     return args
 
 
 def build_colibri_args(
-    colibri_model: Path, *, coli: Path, python: str, uncensored: bool = False
+    colibri_model: Path, *, coli: Path, python: str, uncensored: bool = False,
+    ctx: int | None = None,
 ) -> list[str]:
     # Thinking is decided per request (HAIE sends enable_thinking / reasoning_effort;
     # `coli serve` ignores --no-think/--effort and reads them from each request).
@@ -466,7 +506,8 @@ def build_colibri_args(
         "--host", BACKEND_HOST,
         "--port", str(BACKEND_PORT),
         "--gpu", "auto",
-        "--ctx", "16384" if uncensored else "8192",  # thinking + answer (HAIE caps max_tokens)
+        # prompt + thinking + answer; the proxy fits each request inside it
+        "--ctx", str(ctx or _env_ctx("HIVI_COLIBRI_CTX") or DEFAULT_CTX),
         "--policy", "quality",
         "--auto-tier",
         "--no-think",
@@ -557,7 +598,8 @@ def start_colibri(model: ModelEntry) -> None:
     coli = paths.colibri_cli()
     _require_colibri(coli)
     args = build_colibri_args(
-        colibri, coli=coli, python=paths.python_exe(), uncensored=model.uncensored
+        colibri, coli=coli, python=paths.python_exe(), uncensored=model.uncensored,
+        ctx=context_for(model),
     )
     _launch(args, cwd=coli.parent, log=_log_dir() / f"hivi_coli_{model.id}.log",
             engine="colibri", model=model)
@@ -624,15 +666,7 @@ def _select_model(model: ModelEntry) -> RuntimeState:
     STATE.name = model.name
     STATE.engine = model.engine
     STATE.vision = bool(model.vision_projector_path)
-    if model.engine == "colibri":
-        STATE.context_size = 8192
-    elif model.uncensored:
-        STATE.context_size = 16384
-    elif any(marker in f"{model.id} {model.name}".lower()
-             for marker in ("deepseek-coder-v2", "qwen3-coder-30b", "30b-a3b")):
-        STATE.context_size = 4096
-    else:
-        STATE.context_size = 8192
+    STATE.context_size = context_for(model)
     STATE.detail = f"switching to {model.engine}"
     note = ""
     try:
@@ -644,6 +678,7 @@ def _select_model(model: ModelEntry) -> RuntimeState:
                 ok, why = False, str(e)
             if ok:
                 STATE.status = "ready"
+                STATE.context_size = context_for(model)   # set after release_backend cleared it
                 STATE.detail = f"colibri ready on {BACKEND_BASE}"
                 return STATE
             # Colibrì can't run this file (unsupported quant/arch): llama.cpp can.
@@ -653,6 +688,7 @@ def _select_model(model: ModelEntry) -> RuntimeState:
                 release_backend()
             model = _as_llama(model, why[:300])
             STATE.engine = "llama"
+            STATE.context_size = context_for(model)
             note = " (Colibrì failed, using llama.cpp)"
         llama = paths.llama_server()
         if ROUTER_ENABLED and router_supported(llama) and _preset_safe(model):
@@ -663,6 +699,7 @@ def _select_model(model: ModelEntry) -> RuntimeState:
             release_backend()
             return STATE
         STATE.status = "ready"
+        STATE.context_size = context_for(model)   # set after release_backend cleared it
         where = "llama router" if STATE.router else "llama"
         STATE.detail = f"{where} ready on {BACKEND_BASE}{note}"
         return STATE

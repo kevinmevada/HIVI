@@ -659,6 +659,225 @@
       display: none;
     }
 
+    /* Long pastes: show the start, open on demand (the whole text is still sent) */
+    .msg.user .bubble.long .t {
+      display: block;
+      max-height: 10.5em;
+      overflow: hidden;
+      -webkit-mask-image: linear-gradient(#000 62%, transparent);
+      mask-image: linear-gradient(#000 62%, transparent);
+    }
+
+    .msg.user .bubble.long.open .t {
+      max-height: none;
+      -webkit-mask-image: none;
+      mask-image: none;
+    }
+
+    .msg.user .bubble .more {
+      display: block;
+      margin-top: 6px;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: inherit;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0.9;
+      cursor: pointer;
+    }
+
+    .msg.user .bubble .more:hover {
+      opacity: 1;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .msg.user .bubble .more:focus-visible {
+      outline: 2px solid var(--on-accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    /* ── Attachments: long pastes and text files, sent as documents ── */
+    .doc-tray {
+      display: none;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 4px 2px 10px;
+    }
+
+    .doc-tray.show {
+      display: flex;
+    }
+
+    .msg-docs {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      max-width: min(560px, 85%);
+      margin-bottom: 6px;
+    }
+
+    .doc-card {
+      position: relative;
+      width: 168px;
+    }
+
+    .doc-open {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 104px;
+      padding: 9px 11px 8px;
+      border: 0.5px solid var(--sep);
+      border-radius: 14px;
+      background: var(--bg-grouped);
+      color: var(--label);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      transition: border-color 0.15s ease, background-color 0.15s ease;
+    }
+
+    .doc-open:hover {
+      border-color: var(--label-3);
+    }
+
+    .doc-open:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .doc-open .peek {
+      flex: 1;
+      margin: 0;
+      overflow: hidden;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      line-height: 1.38;
+      color: var(--label-2);
+      white-space: pre;
+      -webkit-mask-image: linear-gradient(#000 55%, transparent);
+      mask-image: linear-gradient(#000 55%, transparent);
+    }
+
+    .doc-open .name {
+      margin-top: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .doc-open .size {
+      font-size: 11px;
+      color: var(--label-3);
+      white-space: nowrap;
+    }
+
+    .doc-card.over .doc-open {
+      border-color: var(--red);
+    }
+
+    .doc-card.over .size {
+      color: var(--red);
+    }
+
+    .doc-remove {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 2px solid var(--bg-elev);
+      border-radius: 50%;
+      background: var(--label);
+      color: var(--bg-elev);
+      cursor: pointer;
+    }
+
+    .doc-remove svg {
+      width: 10px;
+      height: 10px;
+    }
+
+    .doc-viewer {
+      width: min(860px, calc(100vw - 32px));
+      max-height: min(80vh, 900px);
+      padding: 0;
+      border: 0.5px solid var(--sep);
+      border-radius: 18px;
+      background: var(--bg-elev);
+      color: var(--label);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.22);
+    }
+
+    .doc-viewer[open] {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .doc-viewer::backdrop {
+      background: rgba(0, 0, 0, 0.32);
+    }
+
+    .doc-viewer .dv-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px 12px 20px;
+      border-bottom: 0.5px solid var(--sep);
+    }
+
+    .doc-viewer h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .doc-viewer .dv-head p {
+      margin: 2px 0 0;
+      font-size: 12px;
+      color: var(--label-3);
+    }
+
+    .doc-viewer .dv-head div {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .doc-viewer .dv-head button {
+      padding: 6px 12px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      color: var(--label);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .doc-viewer pre {
+      flex: 1;
+      margin: 0;
+      padding: 16px 20px 20px;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     /* ── Image canvas: calm placeholder while rendering, soft reveal when done ── */
     .image-canvas {
       --ic-bg: #ececf0;
@@ -1186,6 +1405,115 @@
       margin: 0;
       padding: 13px 15px 15px;
       overflow-x: auto;
+    }
+
+    /* Long files scroll inside their box, like Claude's code viewer */
+    .md .code pre {
+      max-height: min(520px, 62vh);
+      overflow: auto;
+      overscroll-behavior: contain;
+    }
+
+    .md .code.open pre {
+      max-height: none;
+    }
+
+    .md .code-bar .label {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .md .code-bar .fname {
+      color: var(--label);
+      font-weight: 600;
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .md .code-bar .lines {
+      color: var(--label-3);
+      white-space: nowrap;
+    }
+
+    .md .code-bar .acts {
+      display: flex;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+
+    .file-cards {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 2px 0 6px;
+    }
+
+    .file-card {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px 8px 10px;
+      border: 0.5px solid var(--sep);
+      border-radius: 12px;
+      background: var(--bg-grouped);
+      color: var(--label);
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .file-card:hover {
+      border-color: var(--label-3);
+    }
+
+    .file-card:focus-visible,
+    .files-zip:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .file-card .ext {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--fill);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--label-2);
+    }
+
+    .file-card .nm {
+      display: block;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      font-weight: 600;
+    }
+
+    .file-card .sub {
+      display: block;
+      font-size: 11.5px;
+      color: var(--label-3);
+    }
+
+    .files-zip {
+      padding: 7px 12px;
+      border: 0;
+      border-radius: 999px;
+      background: var(--fill);
+      color: var(--label);
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
     }
 
     .md pre code {
@@ -2697,6 +3025,7 @@
       <div class="composer-wrap" id="composerWrap">
         <div class="glow" aria-hidden="true"></div>
         <div class="composer">
+          <div class="doc-tray" id="docTray" aria-label="Attachments"></div>
           <div class="attach-chip" id="attachChip">
             <div class="thumb">
               <img id="attachPreview" alt="" />
@@ -2756,6 +3085,18 @@
       <input type="file" id="attachInput" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
     </form>
   </div>
+
+  <dialog class="doc-viewer" id="docViewer" aria-labelledby="docViewerName">
+    <div class="dv-head">
+      <div>
+        <h2 id="docViewerName"></h2>
+        <p id="docViewerMeta"></p>
+      </div>
+      <button type="button" id="docViewerCopy">Copy</button>
+      <button type="button" id="docViewerClose">Close</button>
+    </div>
+    <pre id="docViewerText"></pre>
+  </dialog>
 
   <div class="side-scrim" id="sideScrim"></div>
   <nav class="side" id="side" aria-label="Chat history">
@@ -2929,7 +3270,11 @@
       // Title: the first real message, not a "remember / forget" command.
       const first = messages.find((m) => m.role === "user"
         && !/^(?:hivi[,!]?\s+)?(?:please\s+)?(?:remember|forget|note down|yaad rakh|bhool ja)/i.test(textOf(m)));
-      if (first) h["X-HIVI-Chat-Title"] = textOf(first).replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 80);
+      if (first) {
+        const { docs, question } = splitDocs(textOf(first));
+        const title = question.trim() || (docs[0] ? docs[0].name : "");
+        h["X-HIVI-Chat-Title"] = title.replace(/[^\x20-\x7e]/g, " ").trim().slice(0, 80);
+      }
       if (temporary) h["X-HIVI-Temporary"] = "1";
       return h;
     }
@@ -3213,6 +3558,113 @@
       return RE.fence.test(line) || RE.heading.test(line) || RE.ul.test(line) || RE.ol.test(line) ||
         RE.quote.test(line) || RE.hr.test(line) || (line.includes("|") && next != null && RE.tableSep.test(next));
     }
+    /* ───────── Code files ─────────
+       A fence can name its file (```python app.py), or the code's first line can
+       (# app.py, // src/x.ts, <!-- index.html -->). Named blocks become files you
+       can download, one by one or together as a .zip. */
+    const LANG_EXT = {
+      python: "py", py: "py", javascript: "js", js: "js", jsx: "jsx", typescript: "ts", ts: "ts", tsx: "tsx",
+      html: "html", css: "css", scss: "scss", json: "json", yaml: "yml", yml: "yml", toml: "toml", xml: "xml",
+      bash: "sh", sh: "sh", shell: "sh", zsh: "sh", powershell: "ps1", ps1: "ps1", bat: "bat", cmd: "bat",
+      sql: "sql", java: "java", kotlin: "kt", swift: "swift", c: "c", cpp: "cpp", "c++": "cpp", h: "h",
+      csharp: "cs", cs: "cs", go: "go", rust: "rs", rs: "rs", ruby: "rb", php: "php", r: "r", lua: "lua",
+      markdown: "md", md: "md", dockerfile: "Dockerfile", makefile: "Makefile", ini: "ini", csv: "csv", text: "txt", txt: "txt",
+    };
+    const FILE_NAME_RE = /^[\w.\-/]*[\w-]\.[A-Za-z0-9]{1,8}$|^(Dockerfile|Makefile|\.env|\.gitignore)$/;
+    function fenceInfo(fenceLine, firstLine) {
+      const m = /^\s*```\s*([^\s`]*)\s*(.*)$/.exec(fenceLine) || [];
+      let lang = (m[1] || "").toLowerCase();
+      let name = "";
+      const rest = (m[2] || "").trim();
+      const titled = /(?:title|file(?:name)?)\s*=\s*"?([^"\s]+)"?/i.exec(rest);
+      if (titled) name = titled[1];
+      else if (FILE_NAME_RE.test(rest)) name = rest;
+      else if (FILE_NAME_RE.test(m[1] || "") && !(lang in LANG_EXT)) { name = m[1]; lang = ""; }
+      if (!name) {
+        const c = /^\s*(?:#|\/\/|--|;|<!--|\/\*)\s*(?:file(?:name)?:\s*)?([\w.\-/]+\.[A-Za-z0-9]{1,8})\s*(?:-->|\*\/)?\s*$/i.exec(firstLine || "");
+        if (c) name = c[1];
+      }
+      if (!lang && name) {
+        const ext = name.split(".").pop().toLowerCase();
+        lang = Object.keys(LANG_EXT).find((k) => LANG_EXT[k] === ext) || ext;
+      }
+      return { lang, name: name.replace(/^\.?\//, "") };
+    }
+    function codeFiles(text) {
+      const out = [];
+      const lines = String(text || "").replace(/\r/g, "").split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (!/^\s*```/.test(lines[i])) continue;
+        const info = lines[i];
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
+        const { lang, name } = fenceInfo(info, buf[0] || "");
+        if (name) out.push({ name, lang, content: buf.join("\n") + "\n" });
+      }
+      // The last version of a file wins (models often repeat a file after a fix).
+      const byName = new Map(out.map((f) => [f.name, f]));
+      return [...byName.values()];
+    }
+    function downloadName(lang, name) {
+      if (name) return name.split("/").pop();
+      const ext = LANG_EXT[(lang || "").toLowerCase()] || "txt";
+      return /^[A-Z]/.test(ext) ? ext : `snippet.${ext}`;
+    }
+    function saveFile(name, content) {
+      const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+      const a = el("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }
+    async function saveZip(files) {
+      const r = await fetch("/api/files/zip", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: files.map((f) => ({ name: f.name, content: f.content })) }),
+      });
+      if (!r.ok) { addNote("Couldn’t build the .zip: " + (await r.text()), true); return; }
+      const url = URL.createObjectURL(await r.blob());
+      const a = el("a");
+      a.href = url;
+      a.download = "hivi-files.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }
+    function addFileCards(wrap, text) {
+      wrap.querySelector(".file-cards")?.remove();
+      const files = codeFiles(text);
+      if (!files.length) return;
+      const row = el("div", "file-cards");
+      for (const f of files) {
+        const card = el("button", "file-card");
+        card.type = "button";
+        card.title = `Download ${f.name}`;
+        const ext = (f.name.split(".").pop() || "txt").slice(0, 4).toUpperCase();
+        card.appendChild(el("span", "ext", ext));
+        const t = el("span");
+        t.appendChild(el("span", "nm", f.name));
+        const n = f.content.split("\n").length - 1;
+        t.appendChild(el("span", "sub", `${n.toLocaleString()} ${n === 1 ? "line" : "lines"} · Download`));
+        card.appendChild(t);
+        card.addEventListener("click", () => saveFile(f.name.split("/").pop(), f.content));
+        row.appendChild(card);
+      }
+      if (files.length > 1) {
+        const zip = el("button", "files-zip", `Download all (${files.length}) as .zip`);
+        zip.type = "button";
+        zip.addEventListener("click", () => saveZip(files));
+        row.appendChild(zip);
+      }
+      const meta = wrap.querySelector(".meta");
+      wrap.insertBefore(row, meta || null);
+    }
+
     function renderMarkdown(src) {
       const lines = src.replace(/\r/g, "").split("\n");
       let html = "";
@@ -3221,13 +3673,19 @@
         const line = lines[i];
         let m;
         if ((m = line.match(RE.fence))) {
-          const lang = m[1];
           const buf = [];
+          const info = line;
           i++;
           while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
           i++;
-          html += '<div class="code"><div class="code-bar"><span>' + esc(lang || "code") +
-            '</span><button type="button" class="copy-code">Copy</button></div><pre><code>' +
+          const { lang, name } = fenceInfo(info, buf[0] || "");
+          const n = buf.length;
+          const label = name
+            ? `<span class="fname">${esc(name)}</span><span class="lines">${n} ${n === 1 ? "line" : "lines"}</span>`
+            : `<span>${esc(lang || "code")}</span>` + (n > 12 ? `<span class="lines">${n} lines</span>` : "");
+          html += `<div class="code" data-lang="${esc(lang)}" data-name="${esc(name)}"><div class="code-bar"><span class="label">${label}</span>` +
+            '<span class="acts">' + (n > 24 ? '<button type="button" class="expand-code">Expand</button>' : "") +
+            '<button type="button" class="copy-code">Copy</button><button type="button" class="dl-code">Download</button></span></div><pre><code>' +
             esc(buf.join("\n")) + "</code></pre></div>";
           continue;
         }
@@ -3313,7 +3771,24 @@
       return html;
     }
     function renderInto(body, text, typing) {
+      // Re-rendering replaces the code boxes; keep where each one was scrolled, and
+      // let a box that was at its bottom keep following the code being written.
+      const prev = [...body.querySelectorAll(".code pre")].map((p) => ({
+        top: p.scrollTop, atEnd: p.scrollHeight - p.scrollTop - p.clientHeight < 24,
+      }));
+      const opened = [...body.querySelectorAll(".code")].map((c) => c.classList.contains("open"));
       body.innerHTML = renderMarkdown(text);
+      const pres = [...body.querySelectorAll(".code pre")];
+      pres.forEach((p, k) => {
+        if (opened[k]) {
+          p.parentElement.classList.add("open");
+          const ex = p.parentElement.querySelector(".expand-code");
+          if (ex) ex.textContent = "Collapse";
+        }
+        const was = prev[k];
+        if (typing && (!was || was.atEnd)) p.scrollTop = p.scrollHeight;
+        else if (was) p.scrollTop = was.top;
+      });
       if (!typing) return;
       let leaf = body.lastElementChild || body;
       while (leaf.lastElementChild && !/^(BR|HR|TABLE|THEAD)$/.test(leaf.lastElementChild.tagName)) leaf = leaf.lastElementChild;
@@ -3329,10 +3804,36 @@
       scrollToBottom(true);
       return n;
     }
-    function addUser(text, image) {
+    function addUser(text, image, docs) {
       const wrap = el("div", "msg user");
+      if (docs && docs.length) {
+        const row = el("div", "msg-docs");
+        docs.forEach((d) => row.appendChild(docCard(d)));
+        wrap.appendChild(row);
+      }
+      if (!text && !image) {
+        thread.appendChild(wrap);
+        updateEmpty();
+        requestAnimationFrame(() => scrollToBottom(true));
+        return;
+      }
       const bubble = el("div", "bubble");
       bubble.appendChild(el("span", "t", text));
+      const lines = text ? text.split("\n").length : 0;
+      if (text && (text.length > 1400 || lines > 14)) {
+        bubble.classList.add("long");
+        const size = lines > 14 ? `${lines.toLocaleString()} lines`
+          : `${text.trim().split(/\s+/).length.toLocaleString()} words`;
+        const more = el("button", "more", `Show all · ${size}`);
+        more.type = "button";
+        more.setAttribute("aria-expanded", "false");
+        more.addEventListener("click", () => {
+          const open = bubble.classList.toggle("open");
+          more.setAttribute("aria-expanded", String(open));
+          more.textContent = open ? "Show less" : `Show all · ${size}`;
+        });
+        bubble.appendChild(more);
+      }
       if (image) {
         const img = el("img");
         img.src = image.dataUrl;
@@ -3594,6 +4095,146 @@
       // Rough local estimate when the server omits usage
       return Math.max(1, Math.round(text.length / 4));
     }
+    // Same rule as the server's context budget (context_budget.py): errs high.
+    function estimatePromptTokens(text) {
+      if (!text) return 0;
+      const other = (text.match(/[^\x00-\x7f]/g) || []).length;
+      return Math.floor((text.length - other) / 3.2) + other + 1;
+    }
+    let contextSize = null;
+
+    /* ───────── Attachments (long pastes, text files) ─────────
+       Sent the way Claude.ai sends them: documents first, in tags, question last
+       (pasted.py builds and reads the same text). The fixed layout also lets
+       llama.cpp keep a document cached, and read it while you type. */
+    const PASTE_AS_DOC_CHARS = 2000;
+    const PASTE_AS_DOC_LINES = 40;
+    const MAX_DOC_BYTES = 2 * 1024 * 1024;
+    const TEXT_FILE_RE = /\.(txt|md|markdown|rst|log|csv|tsv|json|jsonl|ya?ml|toml|ini|cfg|conf|env|xml|html?|css|scss|sql|sh|bash|zsh|ps1|psm1|bat|cmd|py|ipynb|js|mjs|cjs|ts|tsx|jsx|java|kt|swift|c|h|cc|cpp|hpp|cs|go|rs|rb|php|r|m|scala|lua|pl|tex|bib|srt|vtt|diff|patch)$/i;
+    let pendingDocs = [];
+    const docTray = $("docTray");
+    const docViewer = $("docViewer");
+
+    function wrapDocs(docs, question) {
+      const parts = ["<documents>"];
+      docs.forEach((d, i) => parts.push(
+        `<document index="${i + 1}">\n<source>${d.name}</source>\n<document_content>\n${d.text}\n</document_content>\n</document>`));
+      parts.push("</documents>");
+      return parts.join("\n") + "\n\n" + (question || "");
+    }
+    function splitDocs(text) {
+      const m = /^\s*<documents>\n([\s\S]*?)\n<\/documents>(?:\n\n|\s*$)/.exec(text || "");
+      if (!m) return { docs: [], question: text || "" };
+      const docs = [];
+      const re = /<document index="\d+">\n<source>([\s\S]*?)<\/source>\n<document_content>\n([\s\S]*?)\n<\/document_content>\n<\/document>/g;
+      let d;
+      while ((d = re.exec(m[1]))) docs.push({ name: d[1], text: d[2] });
+      return { docs, question: text.slice(m[0].length) };
+    }
+    function docLines(doc) {
+      return doc.text ? doc.text.split("\n").length : 0;
+    }
+    function docSize(doc) {
+      const lines = docLines(doc);
+      return lines > 1 ? `${lines.toLocaleString()} lines`
+        : `${doc.text.trim().split(/\s+/).length.toLocaleString()} words`;
+    }
+    function docsTooLong(docs) {
+      if (!contextSize) return false;
+      const tokens = docs.reduce((n, d) => n + estimatePromptTokens(d.text), 0);
+      return tokens + 1200 > contextSize;
+    }
+    function docCard(doc, { onRemove, over } = {}) {
+      const card = el("div", "doc-card" + (over ? " over" : ""));
+      const open = el("button", "doc-open");
+      open.type = "button";
+      open.title = `Open ${doc.name}`;
+      open.appendChild(el("pre", "peek", doc.text.slice(0, 600)));
+      open.appendChild(el("span", "name", doc.name));
+      open.appendChild(el("span", "size", over ? "Too long for this model" : docSize(doc)));
+      open.addEventListener("click", () => openDocViewer(doc));
+      card.appendChild(open);
+      if (onRemove) {
+        const x = el("button", "doc-remove");
+        x.type = "button";
+        x.setAttribute("aria-label", `Remove ${doc.name}`);
+        x.title = "Remove";
+        x.innerHTML = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M2 2l6 6M8 2 2 8" /></svg>';
+        x.addEventListener("click", onRemove);
+        card.appendChild(x);
+      }
+      return card;
+    }
+    function renderDocTray() {
+      docTray.innerHTML = "";
+      const over = docsTooLong(pendingDocs);
+      pendingDocs.forEach((doc, i) => docTray.appendChild(docCard(doc, {
+        over,
+        onRemove: () => { pendingDocs.splice(i, 1); renderDocTray(); input.focus(); },
+      })));
+      docTray.classList.toggle("show", pendingDocs.length > 0);
+      updateSendBtn();
+    }
+    function addDoc(doc) {
+      pendingDocs.push(doc);
+      renderDocTray();
+      scheduleReadAhead();
+    }
+    function openDocViewer(doc) {
+      $("docViewerName").textContent = doc.name;
+      $("docViewerMeta").textContent = `${docSize(doc)} · about ${estimatePromptTokens(doc.text).toLocaleString()} tokens`;
+      $("docViewerText").textContent = doc.text;
+      $("docViewerCopy").textContent = "Copy";
+      $("docViewerCopy").onclick = async () => {
+        if (await copyText(doc.text)) $("docViewerCopy").textContent = "Copied";
+      };
+      docViewer.showModal();
+    }
+    $("docViewerClose").addEventListener("click", () => docViewer.close());
+    docViewer.addEventListener("click", (e) => { if (e.target === docViewer) docViewer.close(); });
+    function takeTextFile(file) {
+      if (!file || !(file.type.startsWith("text/") || TEXT_FILE_RE.test(file.name || ""))) return false;
+      if (file.size > MAX_DOC_BYTES) {
+        addNote(`${file.name} is over 2 MB. Attach the part that matters.`, true);
+        return true;
+      }
+      file.text().then((text) => addDoc({ name: file.name, text })).catch(() =>
+        addNote(`Couldn’t read ${file.name}.`, true));
+      return true;
+    }
+
+    // Read ahead: as soon as something long is attached, llama.cpp starts reading
+    // it (the server sends it with max_tokens 1 and keeps it in the prompt cache).
+    // By the time the question is typed, only the question is left to read.
+    let readAheadTimer = null;
+    let readAheadKey = "";
+    function engineIsLlama() {
+      return activeEngine === "llama" || (engineBadge.textContent || "").toLowerCase().includes("llama");
+    }
+    function scheduleReadAhead() {
+      clearTimeout(readAheadTimer);
+      readAheadTimer = setTimeout(readAhead, 450);
+    }
+    function readAhead() {
+      if (!pendingDocs.length || generating || busy || !activeModelId || !engineIsLlama()) return;
+      if (docsTooLong(pendingDocs)) return;
+      const content = wrapDocs(pendingDocs, "");
+      const key = `${chatId}|${messages.length}|${content.length}`;
+      if (key === readAheadKey) return;
+      readAheadKey = key;
+      const payload = {
+        model: openaiModelId,
+        messages: [{ role: "system", content: SYSTEM }, ...messages, { role: "user", content }],
+        stream: true,
+        stream_options: { include_usage: true },
+        reasoning_effort: "low",
+      };
+      fetch("/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...chatHeaders(), "X-HIVI-Prefill": "1" },
+        body: JSON.stringify(payload),
+      }).catch(() => { });
+    }
     function fmtMs(ms) {
       return ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms";
     }
@@ -3649,6 +4290,18 @@
 
     // Code-block copy buttons (delegated)
     thread.addEventListener("click", async (e) => {
+      const dl = e.target.closest(".dl-code");
+      if (dl) {
+        const box = dl.closest(".code");
+        saveFile(downloadName(box.dataset.lang, box.dataset.name), box.querySelector("code").textContent + "\n");
+        return;
+      }
+      const ex = e.target.closest(".expand-code");
+      if (ex) {
+        const box = ex.closest(".code");
+        ex.textContent = box.classList.toggle("open") ? "Collapse" : "Expand";
+        return;
+      }
       const btn = e.target.closest(".copy-code");
       if (!btn) return;
       const code = btn.closest(".code").querySelector("code").textContent;
@@ -3712,12 +4365,43 @@
       return "";
     }
 
+    // Cuts a reply that is stuck in a loop. Only prose is checked (code legitimately
+    // repeats lines: grid cells, test asserts, table rows), only the last few
+    // thousand characters (where a loop shows up; this runs on every streamed
+    // chunk), and only on 5+ back-to-back repeats.
+    function codeRanges(text) {
+      const ranges = [];
+      const re = /^[ \t]*```/gm;
+      let m, open = null;
+      while ((m = re.exec(text))) {
+        if (open === null) open = m.index;
+        else { ranges.push([open, m.index + m[0].length]); open = null; }
+      }
+      if (open !== null) ranges.push([open, text.length]);
+      return ranges;
+    }
     function stopRepetition(text) {
       if (!text) return text;
-      const m = text.match(/(.{40,}?)(\s*\1){2,}/s);
-      if (m && m.index != null) return text.slice(0, m.index + m[1].length).trim();
+      const ranges = codeRanges(text);
+      const inCode = (i) => ranges.some(([a, b]) => i >= a && i < b);
+      // A stuck model repeats the same stretch at the end of what it has written:
+      // look for a 40-600 character unit repeated 5 times back to back.
+      // (Plain comparisons: a backreference regex took ~200 ms per chunk here.)
+      const n = text.length;
+      if (!inCode(n - 1)) {
+        const tail = text.slice(-3200);
+        for (let len = 40; len <= 600 && len * 5 <= tail.length; len++) {
+          const unit = tail.slice(-len);
+          let reps = 1;
+          while (reps < 5 && tail.slice(-(reps + 1) * len, -reps * len) === unit) reps++;
+          if (reps < 5) continue;
+          // Count every repeat (not just the last 3200 characters) and keep one copy.
+          while ((reps + 1) * len <= n && text.slice(n - (reps + 1) * len, n - reps * len) === unit) reps++;
+          return text.slice(0, n - (reps - 1) * len).trim();
+        }
+      }
       const lines = text.split(/\n/);
-      if (lines.length >= 6) {
+      if (lines.length >= 6 && !inCode(text.lastIndexOf("\n"))) {
         const last = lines[lines.length - 1];
         let n = 0;
         for (let i = lines.length - 1; i >= 0; i--) {
@@ -3757,7 +4441,7 @@
       sendBtn.classList.remove("is-stop");
       sendBtn.setAttribute("aria-label", "Send");
       sendBtn.title = "Send (Enter)";
-      sendBtn.disabled = busy || !input.value.trim() && !pendingImage;
+      sendBtn.disabled = busy || !input.value.trim() && !pendingImage && !pendingDocs.length;
     }
     function setBusy(v) {
       busy = v;
@@ -3931,6 +4615,8 @@
         const r = await fetch("/api/status");
         const s = await r.json();
         activeModelId = s.model_id;
+        const ctxNow = Number(s.context_size) || null;
+        if (ctxNow !== contextSize) { contextSize = ctxNow; if (pendingDocs.length) renderDocTray(); }
         lastStatus = s.status || (s.healthy ? "ready" : "idle");
         activeVision = Boolean(s.vision) && (s.status === "ready" || s.healthy);
         attachBtn.disabled = busy;
@@ -4060,9 +4746,37 @@
       return Boolean(m && m.uncensored);
     }
 
+    // Long answers: when a reply stops because it hit its token limit, HIVI carries
+    // on in the same bubble, like Claude's Continue. llama.cpp resumes the exact text
+    // (assistant prefill: the partial answer is sent as the last message); Colibrì,
+    // or a llama build that refuses prefill on a thinking model, gets asked to go on.
+    // Effectively "until it's done": the window slides on the server, so each part
+    // has room. The cap only stops a model that never ends (a runaway loop).
+    const MAX_CONTINUES = 60;
+    const CONTINUE_ASK = "Continue exactly where your previous message stopped. Do not repeat anything and do not restart the code block; just carry on with the next characters.";
+    // visibleText trims; where one part ends and the next begins, the exact
+    // whitespace matters (the newline and indentation inside a code block).
+    function exactText(raw) {
+      const v = visibleText(raw, "");
+      return v && raw.trim() === v ? raw : v;
+    }
+    function joinContinuation(prev, next, mode) {
+      if (!prev) return next;
+      if (mode === "ask") {
+        // Asked to go on, models often reopen the code fence they were inside.
+        const insideFence = ((prev.match(/^\s*```/gm) || []).length % 2) === 1;
+        if (insideFence) next = next.replace(/^\s*```[\w+#.-]*[ \t]*\n/, "");
+        else next = next.replace(/^\s+/, prev.endsWith("\n") ? "" : " ");
+      }
+      return prev + next;
+    }
+
     async function sendMessage(text, opts = {}) {
       const retry = Boolean(opts.retry);
+      const docs = opts.docs || [];
+      const cont = opts.cont || null;   // { wrap, body, text, count, mode }
       let retryWithThinking = false;
+      let continuing = false;
       if (!activeModelId) {
         addNote("Load a model first. Pick one at the top and press Load.");
         return;
@@ -4072,8 +4786,8 @@
         addNote("This model can’t read images. Load a model with a vision projector to send one.", true);
         return;
       }
-      if (!retry) {
-        const promptText = text || "Describe this image.";
+      if (!retry && !cont) {
+        const promptText = docs.length ? wrapDocs(docs, text) : (text || "Describe this image.");
         const content = image
           ? [
             { type: "text", text: promptText },
@@ -4081,10 +4795,11 @@
           ]
           : promptText;
         messages.push({ role: "user", content });
-        addUser(text, image);
+        addUser(text, image, docs);
         if (image) setPendingImage(null);
       }
-      const { wrap, body } = addAssistant();
+      const { wrap, body } = cont ? { wrap: cont.wrap, body: cont.body } : addAssistant();
+      const before = cont ? cont.text : "";
       const epoch = chatEpoch;
       const sameChat = () => epoch === chatEpoch;
 
@@ -4102,20 +4817,28 @@
         messages: [{ role: "system", content: SYSTEM }, ...messages],
         stream: true,
       };
-      if (activeEngine === "llama" || (engineBadge.textContent || "").toLowerCase().includes("llama")) {
+      if (engineIsLlama()) {
         payload.stream_options = { include_usage: true };
         payload.reasoning_effort = "low";
       }
       if (retry) payload.chat_template_kwargs = { enable_thinking: true };
+      if (cont) {
+        payload.messages.push({ role: "assistant", content: cont.text });
+        if (cont.mode === "ask") payload.messages.push({ role: "user", content: CONTINUE_ASK });
+        payload.chat_template_kwargs = { enable_thinking: false };
+        payload.enable_thinking = false;
+      }
       adaptiveHint.textContent = "Choosing sampling settings…";
+
 
       // Typewriter: network may dump big chunks; reveal at a readable pace,
       // speeding up when it falls behind so it never lags far.
-      let target = "";
-      let shown = "";
+      let target = before;
+      let shown = before;
       let streamDone = false;
       let paintTimer = null;
       const TICK_MS = 18;
+      let lastRender = 0;
 
       const paint = () => {
         if (shown.length < target.length) {
@@ -4125,9 +4848,16 @@
           const slice = target.slice(shown.length, next + 40);
           const nl = slice.indexOf("\n");
           shown = nl >= 0 && nl <= 24 ? target.slice(0, shown.length + nl + 1) : target.slice(0, next);
-          const stick = nearBottom();
-          renderInto(body, shown, true);
-          if (stick) scrollToBottom(false);
+          // Long replies: re-rendering all the markdown every 18 ms is what lags.
+          // Past a few thousand characters, repaint at most ~10 times a second.
+          const now = performance.now();
+          const gap = shown.length > 20000 ? 250 : shown.length > 5000 ? 100 : 0;
+          if (now - lastRender >= gap || shown.length >= target.length) {
+            lastRender = now;
+            const stick = nearBottom();
+            renderInto(body, shown, true);
+            if (stick) scrollToBottom(false);
+          }
         }
         if (!streamDone || shown.length < target.length) {
           paintTimer = setTimeout(paint, TICK_MS);
@@ -4144,6 +4874,9 @@
       let full = "";
       let reasoningFull = "";
       let isCommand = false;
+      let contextTooLong = false;
+      let finishReason = null;
+      let serverContinues = false;
       const sentAt = Date.now() / 1000;
       let usageTokens = null;
       let serverTps = null;
@@ -4165,10 +4898,23 @@
       try {
         const r = await fetch("/v1/chat/completions", {
           method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...chatHeaders() },
+          headers: {
+            "Content-Type": "application/json", Accept: "text/event-stream", ...chatHeaders(),
+            ...(cont ? { "X-HIVI-Continue": "1" } : {}),
+          },
           body: JSON.stringify(payload),
           signal: abortCtrl.signal,
         });
+        if (!r.ok && cont && cont.mode === "prefill") {
+          // This llama.cpp build won't prefill here (older builds refuse it on
+          // thinking models): ask the model to continue instead.
+          await r.text().catch(() => "");
+          streamDone = true;
+          const asked = { ...cont, mode: "ask", handedOff: false };
+          setTimeout(() => sendMessage(text, { cont: asked }), 0);
+          cont.handedOff = true;
+          return;
+        }
         if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()));
         const h = (a, b) => r.headers.get(a) || (b ? r.headers.get(b) : null);
         const path = h("X-HIVI-HAIE-Path");
@@ -4190,6 +4936,17 @@
         if (recalled) parts.push(`${recalled} ${recalled === "1" ? "memory" : "memories"} recalled`);
         const memMode = h("X-HIVI-Memory");
         isCommand = memMode === "command";
+        // The server keeps long answers going itself (long_answers.py); the UI's own
+        // continuation is only for servers that don't.
+        serverContinues = Boolean(h("X-HIVI-Continues"));
+        const dropped = h("X-HIVI-Context-Dropped");
+        if (dropped) parts.push(`${dropped} older ${dropped === "1" ? "message" : "messages"} left out to fit`);
+        const tooLong = h("X-HIVI-Context-Too-Long");
+        if (tooLong) {
+          contextTooLong = true;
+          parts.length = 0;
+          parts.push(`message too long for this model (about ${Number(tooLong).toLocaleString()} tokens)`);
+        }
         if (isCommand) {
           const commandChat = chatId;
           setTimeout(() => showMemoryChip(wrap, commandChat), 150);
@@ -4212,6 +4969,8 @@
             if (!data || data === "[DONE]") continue;
             try {
               const obj = JSON.parse(data);
+              const fr = obj?.choices?.[0]?.finish_reason;
+              if (fr) finishReason = fr;
               if (obj?.usage?.completion_tokens != null) usageTokens = obj.usage.completion_tokens;
               const tps = obj?.timings?.predicted_per_second;
               if (typeof tps === "number" && tps > 0) serverTps = tps;
@@ -4224,7 +4983,7 @@
               if (reasoning) reasoningFull += reasoning;
               if (piece) full += piece;
               const visibleSoFar = visibleText(full, "");
-              if (visibleSoFar) setTarget(visibleSoFar);
+              if (visibleSoFar) setTarget(cont ? joinContinuation(before, exactText(full), cont.mode) : visibleSoFar);
               const est = usageTokens != null ? usageTokens : estimateTokens(full || reasoningFull);
               const genMs = Math.max(now - tFirst, 1);
               statusLine.textContent = formatSpeed(est, genMs, tFirst - tRequest, serverTps).tpsStr + " tok/s";
@@ -4234,6 +4993,15 @@
         streamDone = true;
         let visible = visibleText(full, reasoningFull);
         let failed = false;
+        if (cont) {
+          // A continuation: no answer text (or a window-full notice) means we stop here.
+          const part = contextTooLong ? "" : exactText(full);
+          visible = joinContinuation(before, part, cont.mode);
+          if (contextTooLong || !part) {
+            contextTooLong = false;
+            finishReason = null;
+          }
+        }
         if (!visible) {
           const used = usageTokens != null ? usageTokens : estimateTokens(reasoningFull);
           visible = reasoningFull
@@ -4247,10 +5015,34 @@
           const wait = () => (shown.length >= target.length ? resolve() : setTimeout(wait, 40));
           wait();
         });
+        // Hit the length limit with real new text, and not because it was looping
+        // (the loop guard trimmed it): keep going.
+        const rawAnswer = extractAnswer(full);
+        const looped = stopRepetition(rawAnswer).length < rawAnswer.length;
+        const more = !serverContinues && !failed && !contextTooLong && !looped && finishReason === "length"
+          && (cont ? cont.count : 0) < MAX_CONTINUES && sameChat() && visibleText(full, "");
+        if (more) {
+          // Cut off by the length limit: keep writing in the same bubble.
+          await new Promise((resolve) => {
+            const wait = () => (shown.length >= target.length ? resolve() : setTimeout(wait, 40));
+            wait();
+          });
+          const next = { wrap, body, text: cont ? visible : exactText(full), count: (cont ? cont.count : 0) + 1,
+                         mode: engineIsLlama() ? "prefill" : "ask" };
+          setTimeout(() => sendMessage(text, { cont: next }), 0);
+          if (cont) cont.handedOff = true;
+          continuing = true;
+          return;
+        }
         if (failed) {
           body.className = "md err";
           body.textContent = visible;
-        } else if (!retry && sameChat() && activeIsUncensored() && looksLikeRefusal(visible)) {
+        } else if (contextTooLong) {
+          renderInto(body, visible, false);
+          // The bubble stays on screen, but a message the model can't read is not
+          // sent again with the next one.
+          if (sameChat() && messages.length && messages[messages.length - 1].role === "user") messages.pop();
+        } else if (!retry && !cont && sameChat() && activeIsUncensored() && looksLikeRefusal(visible)) {
           // Don't keep the refusal in history (models copy their own refusals);
           // replace it with a thinking-on attempt.
           retryWithThinking = true;
@@ -4258,19 +5050,20 @@
           addNote("Direct answer was a refusal. Retrying with thinking on…");
         } else {
           renderInto(body, visible, false);
+          addFileCards(wrap, visible);
           if (sameChat()) messages.push({ role: "assistant", content: visible });
         }
         if (retryWithThinking) return;
         const m = metrics();
         addMeta(wrap, { ...m, text: failed ? null : visible, prompt: text, chatId });
         statusLine.textContent = formatSpeed(m.tokens, m.genMs, m.ttftMs, m.serverTps).label;
-        if (!failed && !isCommand && !temporary && memorySettings?.memory_enabled !== false) watchMemoryChip(wrap, chatId, sentAt);
+        if (!failed && !isCommand && !contextTooLong && !temporary && memorySettings?.memory_enabled !== false) watchMemoryChip(wrap, chatId, sentAt);
         if (sameChat()) saveChatSoon();
       } catch (e) {
         streamDone = true;
         if (paintTimer) clearTimeout(paintTimer);
         if (e.name === "AbortError") {
-          const partial = visibleText(full, "");
+          const partial = cont ? joinContinuation(before, exactText(full), cont.mode) : visibleText(full, "");
           if (partial) {
             renderInto(body, partial, false);
             if (sameChat()) messages.push({ role: "assistant", content: partial });
@@ -4282,11 +5075,20 @@
             if (sameChat()) messages.pop();
           }
         } else {
-          body.className = "md err";
-          body.textContent = "Something went wrong: " + e.message;
-          if (sameChat()) messages.pop();
+          if (cont && before) {
+            // Keep the answer written so far; only the continuation failed.
+            renderInto(body, before, false);
+            if (sameChat()) messages.push({ role: "assistant", content: before });
+            addNote("Couldn’t continue the answer: " + e.message, true);
+            if (sameChat()) saveChatSoon();
+          } else {
+            body.className = "md err";
+            body.textContent = "Something went wrong: " + e.message;
+            if (sameChat()) messages.pop();
+          }
         }
       } finally {
+        if (continuing || cont?.handedOff) return;  // the next part takes over the UI state
         generating = false;
         abortCtrl = null;
         composerWrap.classList.remove("generating");
@@ -4295,6 +5097,7 @@
         input.focus();
         refreshHealth();
         if (retryWithThinking) setTimeout(() => sendMessage(text, { retry: true }), 0);
+        else if (pendingDocs.length) scheduleReadAhead();
       }
     }
 
@@ -4421,10 +5224,12 @@
           if (m.role === "user") {
             const text = typeof m.content === "string" ? m.content : (m.content.find((p) => p.type === "text") || {}).text || "";
             const img = typeof m.content === "string" ? null : m.content.find((p) => p.type === "image_url");
-            addUser(text, img ? { dataUrl: img.image_url.url, name: "image" } : null);
+            const { docs, question } = splitDocs(text);
+            addUser(question, img ? { dataUrl: img.image_url.url, name: "image" } : null, docs);
           } else {
             const { wrap, body } = addAssistant();
             renderInto(body, m.content, false);
+            addFileCards(wrap, m.content);
             const meta = el("div", "meta");
             const copy = el("button"); copy.type = "button"; copy.innerHTML = ICON_COPY + "<span>Copy</span>";
             copy.addEventListener("click", async () => { if (await copyText(m.content)) { copy.innerHTML = ICON_CHECK + "<span>Copied</span>"; setTimeout(() => (copy.innerHTML = ICON_COPY + "<span>Copy</span>"), 1600); } });
@@ -4839,8 +5644,9 @@
         return;
       }
       const text = input.value.trim();
-      if ((!text && !pendingImage) || busy) return;
-      if (imageMode || (!pendingImage && looksLikeImageRequest(text) && imageStatus?.ready)) {
+      const docs = pendingDocs.slice();
+      if ((!text && !pendingImage && !docs.length) || busy) return;
+      if (!docs.length && (imageMode || (!pendingImage && looksLikeImageRequest(text) && imageStatus?.ready))) {
         input.value = "";
         autosize();
         updateSendBtn();
@@ -4850,8 +5656,10 @@
       input.value = "";
       autosize();
       updateSendBtn();
-      suggestRoute(text, Boolean(pendingImage));
-      sendMessage(text);
+      if (text) suggestRoute(text, Boolean(pendingImage));
+      pendingDocs = [];
+      renderDocTray();
+      sendMessage(text, { docs });
     });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -4882,7 +5690,14 @@
     });
     input.addEventListener("paste", (e) => {
       const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith("image/"));
-      if (file && takeImageFile(file)) e.preventDefault();
+      if (file && takeImageFile(file)) { e.preventDefault(); return; }
+      if (imageMode) return;
+      // A long paste becomes an attachment, like Claude: the box stays free for the question.
+      const text = e.clipboardData?.getData("text/plain") || "";
+      if (text.length >= PASTE_AS_DOC_CHARS || text.split("\n").length >= PASTE_AS_DOC_LINES) {
+        e.preventDefault();
+        addDoc({ name: "Pasted text", text });
+      }
     });
 
     // Drag an image anywhere onto the window
@@ -4901,8 +5716,12 @@
       e.preventDefault();
       dragDepth = 0;
       composerWrap.classList.remove("dragging");
-      const file = e.dataTransfer?.files?.[0];
-      if (file && !busy) takeImageFile(file);
+      if (busy) return;
+      for (const file of e.dataTransfer?.files || []) {
+        if (!takeImageFile(file) && !takeTextFile(file)) {
+          addNote(`HIVI can read text files and images. ${file.name} is neither.`, true);
+        }
+      }
     });
 
     attachBtn.addEventListener("click", () => {
