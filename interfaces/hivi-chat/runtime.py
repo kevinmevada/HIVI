@@ -358,6 +358,69 @@ def _assert_port_free() -> None:
 # Health
 # --------------------------------------------------------------------------- #
 
+def _vram_used_mib() -> float | None:
+    """Used VRAM on the first GPU, or None without nvidia-smi (quick query, no window)."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=3, check=False,
+            creationflags=0x08000000 if sys.platform == "win32" else 0).stdout  # CREATE_NO_WINDOW
+        return float(out.strip().splitlines()[0])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+VRAM_SETTLE_S = float(os.environ.get("HIVI_VRAM_SETTLE_S", "8") or 8)
+
+
+def _wait_vram_released(before_mib: float | None) -> float | None:
+    """After unloading a model, wait until the GPU driver has really handed its VRAM
+    back, so the next model's --fit measures the whole card, not the leftovers.
+
+    Returns MiB freed (None when it can't be measured). Waits until the reading
+    has dropped and then holds still, or VRAM_SETTLE_S at most.
+    """
+    if before_mib is None:
+        return None
+    deadline = time.time() + VRAM_SETTLE_S
+    last = before_mib
+    steady = 0
+    while time.time() < deadline:
+        time.sleep(0.25)
+        now = _vram_used_mib()
+        if now is None:
+            return None
+        if now < before_mib - 256 and abs(now - last) < 64:
+            steady += 1
+            if steady >= 2:          # dropped, then held for two readings
+                return before_mib - now
+        else:
+            steady = 0
+        last = now
+    return max(0.0, before_mib - last)
+
+
+def _note_freed(freed_mib: float | None) -> None:
+    if freed_mib and freed_mib >= 256:
+        _note(f"freed {freed_mib / 1024:.1f} GB VRAM")
+
+
+_NOTES: list[str] = []
+
+
+def _note(text: str) -> None:
+    _NOTES.append(text)
+
+
+def _release_and_settle() -> None:
+    """Stop whatever backend runs, then wait for its VRAM to come back."""
+    running = STATE.proc is not None or _read_pidfile() is not None or _port_in_use(BACKEND_PORT)
+    before = _vram_used_mib() if running else None
+    release_backend()
+    _assert_port_free()
+    _note_freed(_wait_vram_released(before))
+
+
 def _health(timeout_s: float = 3.0) -> bool:
     for path in ("/health", "/v1/models"):
         try:
@@ -619,8 +682,7 @@ def stop_runtime() -> None:
 def _start_single(model: ModelEntry) -> bool:
     """Old path: one backend process for one model (Colibrì, or llama without router)."""
     with _phase("stop"):
-        release_backend()
-        _assert_port_free()
+        _release_and_settle()
     with _phase("start"):
         if model.engine == "colibri":
             start_colibri(model)
@@ -642,6 +704,7 @@ def select_model(model: ModelEntry) -> RuntimeState:
     """
     global _CLOCK, _PENDING_WAIT
     _CLOCK = {}
+    _NOTES.clear()
     if _PENDING_WAIT:
         _CLOCK["wait"] = _PENDING_WAIT
     _PENDING_WAIT = 0.0
@@ -654,7 +717,8 @@ def select_model(model: ModelEntry) -> RuntimeState:
         STATE.timings = clock
         _log_switch(model, clock, STATE.status)
     if STATE.status == "ready":
-        STATE.detail = f"{STATE.detail} · loaded in {_timing_summary(clock)}"
+        extra = "".join(f" · {n}" for n in _NOTES)
+        STATE.detail = f"{STATE.detail} · loaded in {_timing_summary(clock)}{extra}"
     return state
 
 
@@ -685,7 +749,7 @@ def _select_model(model: ModelEntry) -> RuntimeState:
             print(f"HIVI: {model.name} failed on Colibrì ({why}); falling back to llama.cpp")
             _COLIBRI_FAILED[model.id] = why[:300]
             with _phase("stop"):
-                release_backend()
+                _release_and_settle()
             model = _as_llama(model, why[:300])
             STATE.engine = "llama"
             STATE.context_size = context_for(model)
@@ -728,7 +792,11 @@ def _env_on(name: str, default: bool) -> bool:
 
 
 ROUTER_ENABLED = _env_on("HIVI_LLAMA_ROUTER", True)
-MODELS_MAX = max(1, int(os.environ.get("HIVI_MODELS_MAX", "3") or 3))
+# How many models the router keeps loaded. One by default: on an 8 GB card a model
+# left resident keeps its VRAM, and the next one's --fit then sizes itself to the
+# leftovers and runs mostly on the CPU (slow until reloaded). Set HIVI_MODELS_MAX=2+
+# on a big GPU for instant switching back.
+MODELS_MAX = max(1, int(os.environ.get("HIVI_MODELS_MAX", "1") or 1))
 # MiB of VRAM the router keeps free; "off" lets models pile up on the GPU.
 MEMORY_MARGIN = os.environ.get("HIVI_MODELS_MEMORY_MARGIN", "512").strip()
 RAM_RESERVE_GB = float(os.environ.get("HIVI_RAM_RESERVE_GB", "8") or 8)
@@ -901,8 +969,7 @@ def _router_alive() -> bool:
 
 def _start_router(llama: Path) -> None:
     with _phase("stop"):
-        release_backend()  # Colibrì or a single-model llama-server
-        _assert_port_free()
+        _release_and_settle()  # Colibrì or a single-model llama-server
     with _phase("router_start"):
         args = build_router_args(llama, _preset_path(),
                                  margin_ok="--models-memory-margin" in _llama_help(llama))
@@ -977,26 +1044,45 @@ def plan_evictions(
     return out
 
 
+def _unload(mid: str, why: str) -> None:
+    STATE.detail = f"unloading {mid} {why}"
+    _http_json("POST", "/models/unload", {"model": mid})
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        if _row_status(_router_row(mid))[0] not in _LIVE:
+            break
+        time.sleep(0.25)
+    if mid in STATE.resident:
+        STATE.resident.remove(mid)
+
+
+def _live_others(model: ModelEntry, rows: list[dict]) -> list[str]:
+    """Other loaded models, least recently used first."""
+    live = [r["id"] for r in rows if _row_status(r)[0] in _LIVE and r.get("id") != model.id]
+    return [m for m in live if m not in STATE.resident] + [m for m in STATE.resident if m in live]
+
+
+def _make_gpu_room(model: ModelEntry, rows: list[dict]) -> list[str]:
+    """Unload the models beyond HIVI_MODELS_MAX before loading ``model`` (least recent
+    first), so it is sized against a GPU that is actually free."""
+    order = _live_others(model, rows)
+    extra = len(order) - (MODELS_MAX - 1)
+    gone = order[:max(0, extra)]
+    for mid in gone:
+        _unload(mid, "to free the GPU")
+    return gone
+
+
 def _make_ram_room(model: ModelEntry, rows: list[dict]) -> None:
     from registry import scan_models
 
-    live = [r["id"] for r in rows if _row_status(r)[0] in _LIVE and r.get("id") != model.id]
-    if not live:
+    order = _live_others(model, rows)
+    if not order:
         return
-    # Least recent first: ones HIVI doesn't know about, then HIVI's LRU order.
-    order = [m for m in live if m not in STATE.resident] + [m for m in STATE.resident if m in live]
     total = _total_ram_gb() or 32.0
-    sizes = {m.id: model_footprint_gb(m) for m in scan_models() if m.id in live}
+    sizes = {m.id: model_footprint_gb(m) for m in scan_models() if m.id in order}
     for mid in plan_evictions(model, order, sizes, total - RAM_RESERVE_GB):
-        STATE.detail = f"unloading {mid} to free RAM"
-        _http_json("POST", "/models/unload", {"model": mid})
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            if _row_status(_router_row(mid))[0] not in _LIVE:
-                break
-            time.sleep(0.25)
-        if mid in STATE.resident:
-            STATE.resident.remove(mid)
+        _unload(mid, "to free RAM")
 
 
 def _router_load(model: ModelEntry) -> None:
@@ -1040,7 +1126,12 @@ def _select_in_router(model: ModelEntry, llama: Path) -> None:
     STATE.backend_model = None
     rows = _router_rows()
     with _phase("unload"):
-        _make_ram_room(model, rows)
+        others = _live_others(model, rows)
+        before = _vram_used_mib() if others else None
+        _make_gpu_room(model, rows)
+        _make_ram_room(model, _router_rows())
+        if before is not None and len(_live_others(model, _router_rows())) < len(others):
+            _note_freed(_wait_vram_released(before))
     with _phase("load"):
         _router_load(model)
     STATE.resident = [m for m in STATE.resident

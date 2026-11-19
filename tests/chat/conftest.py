@@ -43,3 +43,30 @@ def _restore_runtime_state():
     yield
     for name, value in saved.items():
         setattr(runtime.STATE, name, value)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_vram_reads(monkeypatch):
+    """Model switches wait for VRAM to be released (runtime._wait_vram_released). In
+    tests there is no real model on the GPU: never call the real nvidia-smi (on a PC
+    that has one, every switch would wait out the timeout)."""
+    import runtime
+
+    monkeypatch.setattr(runtime, "_vram_used_mib", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _gguf_facts_cache_in_tmp(monkeypatch, tmp_path):
+    """The model-facts cache (gguf_context) lives in tmp, never in the repo's data/."""
+    import gguf_context
+
+    monkeypatch.setattr(gguf_context, "_info_file", lambda: tmp_path / "gguf_info.json")
+    monkeypatch.setattr(gguf_context, "_INFO", {})
+    monkeypatch.setattr(gguf_context, "_INFO_LOADED", False)
+
+    def warm_now(paths_, on_done=None):   # no side threads outliving the test
+        for p in paths_:
+            gguf_context.model_facts(p)
+        return False
+
+    monkeypatch.setattr(gguf_context, "warm", warm_now)

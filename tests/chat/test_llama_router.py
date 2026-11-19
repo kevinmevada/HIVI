@@ -24,6 +24,7 @@ class MockRouter:
         self.status: dict[str, str] = {}
         self.loads: list[str] = []
         self.unloads: list[str] = []
+        self.events: list[tuple[str, str]] = []   # ("load" | "unload", model) in order
         self.fail: set[str] = set()
         self._read()
 
@@ -72,6 +73,7 @@ class MockRouter:
                     if router.status[mid] != "unloaded":
                         return self._send(400, {"error": {"message": "model is already running"}})
                     router.loads.append(mid)
+                    router.events.append(("load", mid))
                     router.status[mid] = "loading"
 
                     def finish():
@@ -82,6 +84,7 @@ class MockRouter:
                     return self._send(200, {"success": True})
                 if self.path == "/models/unload":
                     router.unloads.append(mid)
+                    router.events.append(("unload", mid))
                     router.status[mid] = "unloaded"
                     return self._send(200, {"success": True})
                 return self._send(404, {"error": "nope"})
@@ -155,7 +158,8 @@ def _model(name_part: str) -> registry.ModelEntry:
     return m
 
 
-def test_switches_stay_in_one_router_process(env):
+def test_switches_stay_in_one_router_process(env, monkeypatch):
+    monkeypatch.setattr(runtime, "MODELS_MAX", 3)   # big-GPU setting: keep models resident
     oss, gemma = _model("gpt-oss"), _model("gemma")
     assert oss.engine == gemma.engine == "llama"
 
@@ -181,6 +185,7 @@ def test_switches_stay_in_one_router_process(env):
 
 
 def test_ram_guard_unloads_least_recent(env, monkeypatch):
+    monkeypatch.setattr(runtime, "MODELS_MAX", 3)   # so only the RAM guard decides
     oss, gemma = _model("gpt-oss"), _model("gemma")
     runtime.select_model(oss)
     runtime.select_model(gemma)
@@ -220,3 +225,82 @@ def test_colibri_failure_falls_back_to_llama_router(env, monkeypatch):
     assert hauhau.id in runtime._COLIBRI_FAILED
     preset = (runtime._preset_path()).read_text(encoding="utf-8")
     assert f"[{hauhau.id}]" in preset
+
+
+# ------------------------------------------------- one model on the GPU -- #
+
+def _third_llama_model() -> registry.ModelEntry:
+    """A third model that runs on llama.cpp (the fixture's A3B one goes to Colibrì)."""
+    import os
+    p = Path(os.environ["HIVI_MODELS_ROOT"]) / "General/dense/Mistral-Small-3.2-24B-Q4_K_M.gguf"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\0" * 64)
+    registry.clear_scan_cache()   # the model list is cached for a few seconds
+    m = _model("Mistral-Small")
+    assert m.engine == "llama", m.engine_reason
+    return m
+
+
+def test_default_unloads_the_old_model_before_loading_the_new_one(env):
+    """Default (HIVI_MODELS_MAX=1): the old model leaves the GPU first, so the new one
+    is sized against the whole card instead of the leftovers."""
+    assert runtime.MODELS_MAX == 1
+    oss, gemma, a3b = _model("gpt-oss"), _model("gemma"), _third_llama_model()
+    runtime.select_model(oss)
+    st = runtime.select_model(gemma)
+    assert st.status == "ready", st.detail
+    router = env["router"]
+    assert router.events == [("load", oss.id), ("unload", oss.id), ("load", gemma.id)]
+    assert runtime.STATE.resident == [gemma.id]
+    runtime.select_model(a3b)
+    assert router.events[-2:] == [("unload", gemma.id), ("load", a3b.id)]
+    assert [m for m, st in router.status.items() if st != "unloaded"] == [a3b.id]
+
+
+def test_waits_for_vram_to_come_back_before_loading(env, monkeypatch):
+    """The next load starts only after the driver has handed the old model's VRAM back."""
+    oss, gemma = _model("gpt-oss"), _model("gemma")
+    runtime.select_model(oss)
+    router = env["router"]
+    # nvidia-smi readings: 7.2 GB in use, then freeing over a few polls, then steady.
+    readings = iter([7300, 7300, 5100, 900, 880, 875, 875])
+    seen_at_load: list[int] = []
+
+    def vram():
+        return next(readings, 875)
+
+    monkeypatch.setattr(runtime, "_vram_used_mib", vram)
+    real_load = runtime._router_load
+
+    def load_spy(model):
+        seen_at_load.append(len(router.events))
+        return real_load(model)
+
+    monkeypatch.setattr(runtime, "_router_load", load_spy)
+    monkeypatch.setattr(runtime.time, "sleep", lambda s: None)
+    st = runtime.select_model(gemma)
+    assert st.status == "ready"
+    assert "freed 6.3 GB VRAM" in st.detail, st.detail
+    assert router.events[seen_at_load[0] - 1] == ("unload", oss.id)
+
+
+def test_vram_wait_gives_up_without_nvidia_smi_or_change(monkeypatch):
+    monkeypatch.setattr(runtime, "_vram_used_mib", lambda: None)
+    assert runtime._wait_vram_released(7000) is None           # can't measure: no wait
+    assert runtime._wait_vram_released(None) is None           # nothing was running
+    monkeypatch.setattr(runtime, "VRAM_SETTLE_S", 0.6)
+    monkeypatch.setattr(runtime, "_vram_used_mib", lambda: 7000)
+    t0 = time.perf_counter()
+    assert runtime._wait_vram_released(7000) == 0.0            # never dropped: stop at the cap
+    assert time.perf_counter() - t0 < 1.5
+
+
+def test_models_max_two_keeps_the_most_recent_other(env, monkeypatch):
+    monkeypatch.setattr(runtime, "MODELS_MAX", 2)
+    oss, gemma, a3b = _model("gpt-oss"), _model("gemma"), _third_llama_model()
+    runtime.select_model(oss)
+    runtime.select_model(gemma)
+    assert env["router"].unloads == []
+    runtime.select_model(a3b)
+    assert env["router"].unloads == [oss.id]          # least recently used goes
+    assert runtime.STATE.resident == [gemma.id, a3b.id]

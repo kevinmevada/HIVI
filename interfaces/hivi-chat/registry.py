@@ -14,6 +14,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import gguf_context
 from hivi_paths import paths
 
 CHAT = "chat"
@@ -41,6 +42,16 @@ class ModelEntry:
     vision_projector_path: str | None = None
     uncensored: bool = False
     kind: str = CHAT  # "chat" | "embedding" | "reranker" | "fim"
+    # Read from the file itself (gguf_context.model_facts); None until known.
+    total_params: int | None = None
+    active_params: int | None = None
+    experts: int = 0
+    experts_used: int = 0
+    trained_ctx: int | None = None
+    thinking: str = "unknown"      # "toggle" | "effort" | "always" | "none" | "unknown"
+    auto_engine: str = ""          # what HIVI would pick without a pin
+    pinned: str | None = None      # "llama" | "colibri" when the user pinned an engine
+    facts_pending: bool = False    # real sizes still being read in the background
 
 
 _IMAGE_DIRS = {"image", "images", "text_encoders", "text_encoder", "vae", "diffusion", "sd", "comfyui"}
@@ -257,6 +268,7 @@ def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
     if not models_dir.exists():
         return out
     pins = engine_pins()
+    unknown: list[str] = []
     for gguf in sorted(models_dir.rglob("*.gguf")):
         rel = str(gguf.relative_to(models_dir))
         stem = gguf.stem
@@ -268,7 +280,10 @@ def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
         kind = _kind(stem, rel)
         # Retrieval models never take a vision projector.
         projector = _find_projector(gguf) if kind == CHAT else None
+        if _is_later_split_part(gguf):
+            continue  # parts 2..N of a split model belong to part 1
         engine, reason = _pick_engine(stem, rel, has_projector=projector is not None, kind=kind)
+        auto_engine = engine
         pin = pins.get(mid) if kind == CHAT else None
         if pin and pin != engine:
             engine, reason = pin, f"pinned to {pin} (auto would pick {engine}: {reason})"
@@ -277,13 +292,26 @@ def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
         if not colibri.exists():
             alt = gguf.parent / f"{stem}.colibri"
             colibri = alt if alt.exists() else colibri
+        known, facts = gguf_context.cached_facts(gguf) if kind == CHAT else (True, None)
+        if not known:
+            unknown.append(str(gguf))
+        facts = facts or {}
         out.append(
             ModelEntry(
                 id=mid,
                 name=_display_name(stem, rel),
                 path=str(gguf),
                 quant=_quant(stem),
-                params=_params(stem, rel),
+                params=gguf_context.params_label(facts) or _params(stem, rel),
+                total_params=facts.get("total_params"),
+                active_params=facts.get("active_params"),
+                experts=int(facts.get("experts") or 0),
+                experts_used=int(facts.get("experts_used") or 0),
+                trained_ctx=facts.get("trained_ctx"),
+                thinking=facts.get("thinking") or ("unknown" if not known else "none"),
+                auto_engine=auto_engine,
+                pinned=pin if pin in ("llama", "colibri") else None,
+                facts_pending=not known,
                 size_gb=round(gguf.stat().st_size / (1024**3), 2),
                 engine=engine,
                 engine_reason=reason,
@@ -293,7 +321,18 @@ def _scan_models_uncached(models_dir: Path) -> list[ModelEntry]:
                 kind=kind,
             )
         )
+    if unknown:
+        # Read the real sizes off the files on a side thread; the next scan has them.
+        gguf_context.warm(unknown, on_done=clear_scan_cache)
     return out
+
+
+_SPLIT_PART = re.compile(r"-(\d{5})-of-\d{5}$", re.IGNORECASE)
+
+
+def _is_later_split_part(gguf: Path) -> bool:
+    m = _SPLIT_PART.search(gguf.stem)
+    return bool(m) and int(m.group(1)) > 1
 
 
 def models_as_dicts(kind: str | None = CHAT) -> list[dict]:

@@ -54,6 +54,7 @@ def hivi(tmp_path_factory):
     _gguf(models / "Coding" / "small" / "fake-coder-8k-Q4_K_M.gguf", 8192)
     _gguf(models / "Coding" / "big" / "fake-coder-32k-Q4_K_M.gguf", 32768)
     _gguf(models / "Coding" / "think" / "fake-thinking-8k-Q4_K_M.gguf", 8192)
+    FAKE.chmod(FAKE.stat().st_mode | 0o111)   # zips made on Windows drop the executable bit
     port, backend = _port(), _port()
     env = {**os.environ, "HIVI_DATA_ROOT": str(root / "data"), "HIVI_MODELS_ROOT": str(models),
            "HIVI_LLAMA_SERVER": str(FAKE), "HIVI_BACKEND_PORT": str(backend),

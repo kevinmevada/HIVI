@@ -163,10 +163,189 @@
     }
 
     .picker {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 8px;
       min-width: 0;
+    }
+
+    /* ── Model details: real size, context, thinking, engine pin ── */
+    .info-btn {
+      width: 30px;
+      height: 30px;
+      flex-shrink: 0;
+    }
+
+    .info-btn[aria-expanded="true"] {
+      background: var(--fill);
+      color: var(--label);
+    }
+
+    .model-info {
+      position: absolute;
+      top: calc(100% + 9px);
+      left: 0;
+      z-index: 40;
+      width: min(400px, calc(100vw - 24px));
+      padding: 16px 16px 14px;
+      border: 0.5px solid var(--sep);
+      border-radius: 18px;
+      background: var(--bg-elev);
+      color: var(--label);
+      box-shadow: 0 16px 46px rgba(0, 0, 0, 0.22);
+    }
+
+    .model-info[hidden] {
+      display: none;
+    }
+
+    .model-info h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .model-info dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 7px 14px;
+      margin: 0 0 14px;
+      font-size: 13px;
+    }
+
+    .model-info dt {
+      color: var(--label-3);
+    }
+
+    .model-info dd {
+      margin: 0;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .model-info dd .sub {
+      display: block;
+      color: var(--label-3);
+      font-size: 12px;
+    }
+
+    .engine-pin {
+      margin: 0;
+      padding: 12px 0 0;
+      border: 0;
+      border-top: 0.5px solid var(--sep);
+    }
+
+    .engine-pin legend {
+      padding: 12px 0 8px;
+      float: left;
+      width: 100%;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .seg {
+      clear: both;
+      display: flex;
+      padding: 2px;
+      border-radius: 10px;
+      background: var(--fill);
+    }
+
+    .seg label {
+      flex: 1;
+      position: relative;
+    }
+
+    .seg input {
+      position: absolute;
+      opacity: 0;
+      inset: 0;
+      margin: 0;
+      cursor: pointer;
+    }
+
+    .seg span {
+      display: block;
+      padding: 6px 8px;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--label-2);
+      transition: background 0.15s, color 0.15s;
+    }
+
+    .seg input:checked + span {
+      background: var(--bg-elev);
+      color: var(--label);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+
+    .seg input:focus-visible + span {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
+    .pin-note {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--label-3);
+      line-height: 1.45;
+    }
+
+    .pin-note button {
+      margin-left: 4px;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--accent);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* ── Thinking toggle in the composer ── */
+    .think-btn {
+      height: 30px;
+      padding: 0 11px 0 9px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--label-2);
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s;
+    }
+
+    .think-btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .think-btn:hover {
+      background: var(--fill);
+      color: var(--label);
+    }
+
+    .think-btn[data-mode="on"] {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      color: var(--accent);
+    }
+
+    .think-btn[data-mode="off"] {
+      color: var(--label-3);
+    }
+
+    .think-btn[hidden],
+    body.image-mode .think-btn {
+      display: none;
     }
 
     .select-wrap {
@@ -2955,7 +3134,17 @@
           <path d="M3 4.5 6 7.5 9 4.5" />
         </svg>
       </div>
+      <button id="modelInfoBtn" class="icon-btn info-btn" type="button" aria-expanded="false"
+        aria-controls="modelInfo" title="Model details and engine" aria-label="Model details and engine">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"
+          stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 11v5.2" />
+          <circle cx="12" cy="7.9" r="0.6" fill="currentColor" />
+        </svg>
+      </button>
       <button id="loadBtn" class="pill-btn" type="button">Load</button>
+      <section id="modelInfo" class="model-info" aria-labelledby="modelInfoName" hidden></section>
     </div>
 
     <div class="status-area">
@@ -3053,6 +3242,14 @@
                   <path d="m4 17 4.6-4.4a1.5 1.5 0 0 1 2 0L15 17" />
                   <path d="m13.5 15 1.9-1.8a1.5 1.5 0 0 1 2 0l3 2.8" />
                 </svg>
+              </button>
+              <button class="think-btn" id="thinkBtn" type="button" data-mode="auto" hidden>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                  stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9 18h6M10 21h4" />
+                  <path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z" />
+                </svg>
+                <span id="thinkLabel">Think · Auto</span>
               </button>
             </div>
             <div class="composer-tools">
@@ -4561,8 +4758,179 @@
       return s.charAt(0).toUpperCase() + s.slice(1);
     }
 
+    /* ───────── Model details, engine pin, thinking toggle ───────── */
+    const modelInfoBtn = $("modelInfoBtn");
+    const modelInfo = $("modelInfo");
+    const thinkBtn = $("thinkBtn");
+    const ENGINE_NAMES = { llama: "llama.cpp", colibri: "Colibrì" };
+    let modelInfoOpen = false;
+    let thinkMode = (() => {
+      try { return localStorage.getItem("hivi.think") || "auto"; } catch (_) { return "auto"; }
+    })();
+    if (!["auto", "on", "off"].includes(thinkMode)) thinkMode = "auto";
+
+    function countLabel(n) {
+      if (!n) return "?";
+      if (n >= 10e9) return `${Math.round(n / 1e9)}B`;
+      if (n >= 1e9) return `${(n / 1e9).toFixed(1).replace(/\.0$/, "")}B`;
+      return `${Math.round(n / 1e6)}M`;
+    }
+    function thinkingText(kind) {
+      return {
+        toggle: ["Can think before answering", "Auto, on or off with the button next to the message box"],
+        effort: ["Always reasons a little", "Reasoning effort low or high with the button next to the message box"],
+        always: ["Always thinks before answering", "This model can't switch it off"],
+        none: ["No thinking mode", ""],
+        unknown: ["Not known yet", "Reading the model file…"],
+      }[kind] || ["Not known yet", ""];
+    }
+    function selectedModel() {
+      return models.find((m) => m.id === modelSelect.value) || null;
+    }
+    function activeModel() {
+      return models.find((m) => m.id === activeModelId) || null;
+    }
+    function dlRow(dl, term, main, sub) {
+      dl.appendChild(el("dt", "", term));
+      const dd = el("dd", "", main);
+      if (sub) dd.appendChild(el("span", "sub", sub));
+      dl.appendChild(dd);
+    }
+    function renderModelInfo() {
+      const m = selectedModel();
+      modelInfo.innerHTML = "";
+      if (!m) {
+        modelInfo.appendChild(el("p", "pin-note", "No model selected."));
+        return;
+      }
+      const h = el("h2", "", m.name);
+      h.id = "modelInfoName";
+      modelInfo.appendChild(h);
+      const dl = el("dl");
+      if (m.total_params) {
+        const moe = m.experts && m.active_params && m.active_params < m.total_params * 0.9;
+        dlRow(dl, "Size", moe
+          ? `${countLabel(m.total_params)} parameters, ${countLabel(m.active_params)} active`
+          : `${countLabel(m.total_params)} parameters`,
+          moe ? `Mixture of experts: ${m.experts_used} of ${m.experts} experts work on each token` : "");
+      } else {
+        dlRow(dl, "Size", m.params || "Unknown",
+          m.facts_pending ? "Guessed from the file name; reading the file…" : "Guessed from the file name");
+      }
+      dlRow(dl, "File", `${m.quant || "?"} · ${m.size_gb} GB`, m.vision_projector_path ? "Can see images" : "");
+      if (m.run_ctx) {
+        dlRow(dl, "Context", `${m.run_ctx.toLocaleString()} tokens`,
+          m.trained_ctx ? `Trained for ${m.trained_ctx.toLocaleString()}` : "");
+      }
+      const [tMain, tSub] = thinkingText(m.facts_pending ? "unknown" : m.thinking);
+      dlRow(dl, "Thinking", tMain, tSub);
+      modelInfo.appendChild(dl);
+
+      const fs = el("fieldset", "engine-pin");
+      fs.appendChild(el("legend", "", "Engine"));
+      const seg = el("div", "seg");
+      seg.setAttribute("role", "radiogroup");
+      const current = m.pinned || "auto";
+      for (const [value, label] of [["auto", "Auto"], ["llama", "llama.cpp"], ["colibri", "Colibrì"]]) {
+        const lab = el("label");
+        const radio = el("input");
+        radio.type = "radio";
+        radio.name = "enginePin";
+        radio.value = value;
+        radio.checked = value === current;
+        radio.addEventListener("change", () => setEnginePin(m, value));
+        lab.append(radio, el("span", "", label));
+        seg.appendChild(lab);
+      }
+      fs.appendChild(seg);
+      const auto = ENGINE_NAMES[m.auto_engine] || m.auto_engine;
+      const why = (m.engine_reason || "").replace(/^pinned to \w+ \(auto would pick \w+: (.*)\)$/, "$1");
+      const note = el("p", "pin-note", m.pinned
+        ? `Pinned to ${ENGINE_NAMES[m.pinned]}. Auto would pick ${auto}: ${why}.`
+        : `Auto picks ${auto}: ${why}.`);
+      const loadedOnOther = m.id === activeModelId && activeEngine && activeEngine !== m.engine;
+      if (loadedOnOther) {
+        note.append(` It's running on ${ENGINE_NAMES[activeEngine]} right now.`);
+        const reload = el("button", "", "Reload now");
+        reload.type = "button";
+        reload.addEventListener("click", () => { setModelInfoOpen(false); loadSelected(); });
+        note.appendChild(reload);
+      } else if (m.pinned || m.engine !== m.auto_engine) {
+        note.append(" Applies the next time it loads.");
+      }
+      fs.appendChild(note);
+      modelInfo.appendChild(fs);
+    }
+    async function setEnginePin(m, value) {
+      try {
+        const r = await fetch("/api/engine", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: m.id, engine: value }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+      } catch (e) {
+        addNote("Couldn’t change the engine: " + e.message, true);
+      }
+      await loadModels();
+      renderModelInfo();
+    }
+    function setModelInfoOpen(open) {
+      modelInfoOpen = open;
+      if (open) renderModelInfo();
+      modelInfo.hidden = !open;
+      modelInfoBtn.setAttribute("aria-expanded", String(open));
+    }
+    modelInfoBtn.addEventListener("click", () => setModelInfoOpen(!modelInfoOpen));
+    document.addEventListener("click", (e) => {
+      if (modelInfoOpen && !modelInfo.contains(e.target) && !modelInfoBtn.contains(e.target)) setModelInfoOpen(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modelInfoOpen) { setModelInfoOpen(false); modelInfoBtn.focus(); }
+    });
+
+    // Thinking: Auto (HAIE decides per message), On, Off. gpt-oss style models can't
+    // switch reasoning off, only between low and high effort.
+    function thinkKind() {
+      const m = activeModel();
+      return m && !m.facts_pending ? m.thinking : null;
+    }
+    function updateThinkBtn() {
+      const kind = thinkKind();
+      const show = kind === "toggle" || kind === "effort";
+      thinkBtn.hidden = !show;
+      if (!show) return;
+      const words = kind === "effort"
+        ? { auto: "Reasoning · Auto", on: "Reasoning · High", off: "Reasoning · Low" }
+        : { auto: "Think · Auto", on: "Think · On", off: "Think · Off" };
+      const tips = kind === "effort"
+        ? { auto: "HIVI picks the reasoning effort for each message", on: "High reasoning effort: slower, more careful", off: "Low reasoning effort: faster" }
+        : { auto: "HIVI decides for each message whether to think first", on: "Always think before answering: slower, more careful", off: "Answer straight away: faster" };
+      thinkBtn.dataset.mode = thinkMode;
+      $("thinkLabel").textContent = words[thinkMode];
+      thinkBtn.title = tips[thinkMode] + " (click to change)";
+      thinkBtn.setAttribute("aria-label", `${words[thinkMode]}. ${tips[thinkMode]}`);
+    }
+    thinkBtn.addEventListener("click", () => {
+      thinkMode = { auto: "on", on: "off", off: "auto" }[thinkMode];
+      try { localStorage.setItem("hivi.think", thinkMode); } catch (_) { }
+      updateThinkBtn();
+    });
+    // What the toggle adds to a chat request (the server's HAIE fills in the rest).
+    function applyThinkMode(payload, headers) {
+      const kind = thinkKind();
+      if (thinkMode === "auto" || !(kind === "toggle" || kind === "effort")) return;
+      const on = thinkMode === "on";
+      if (kind === "effort") {
+        payload.reasoning_effort = on ? "high" : "low";
+      } else {
+        payload.chat_template_kwargs = { ...(payload.chat_template_kwargs || {}), enable_thinking: on };
+        payload.enable_thinking = on;     // Colibrì reads the top-level field
+      }
+      if (on) headers["X-HIVI-Think"] = "on";
+    }
+
     function optionLabel(m) {
-      const eng = m.engine === "colibri" ? "Colibrì" : "llama.cpp";
+      const eng = (m.engine === "colibri" ? "Colibrì" : "llama.cpp") + (m.pinned ? " (pinned)" : "");
       const extras = [m.params, m.quant, `${m.size_gb} GB`, eng].filter(Boolean);
       if (m.vision_projector_path) extras.push("vision");
       return `${m.name}  (${extras.join(", ")})`;
@@ -4573,7 +4941,7 @@
       const r = await fetch("/api/models", { cache: "no-store" });
       const data = await r.json();
       const nextModels = (data.models || []).slice().sort((a, b) => (a.size_gb - b.size_gb) || a.name.localeCompare(b.name));
-      const nextSignature = nextModels.map((m) => m.id).join("\u0000");
+      const nextSignature = nextModels.map((m) => `${m.id}|${m.engine}|${m.pinned}|${m.params}`).join("\u0000");
       const selection = modelSelect.value || activeModelId;
       const changed = nextSignature !== modelSignature;
       models = nextModels;
@@ -4596,6 +4964,10 @@
       modelSelect.disabled = busy || !models.length;
       updateLoadBtn();
       updateHero();
+      updateThinkBtn();
+      if (modelInfoOpen) renderModelInfo();
+      // Real sizes are read off the files in the background: ask again shortly.
+      if (models.some((m) => m.facts_pending)) setTimeout(() => loadModels().catch(() => { }), 2500);
     }
 
     async function refreshOpenAIModel() {
@@ -4623,6 +4995,7 @@
         if (!activeVision && pendingImage) setPendingImage(null);
         renderBadge(s.engine, s.status);
         renderDot(s.status);
+        updateThinkBtn();
         if (!generating) {
           const detail = sentence(s.detail || s.status || "Idle");
           statusLine.textContent = detail;
@@ -4821,6 +5194,8 @@
         payload.stream_options = { include_usage: true };
         payload.reasoning_effort = "low";
       }
+      const thinkHeaders = {};
+      if (!retry && !cont) applyThinkMode(payload, thinkHeaders);
       if (retry) payload.chat_template_kwargs = { enable_thinking: true };
       if (cont) {
         payload.messages.push({ role: "assistant", content: cont.text });
@@ -4899,7 +5274,7 @@
         const r = await fetch("/v1/chat/completions", {
           method: "POST",
           headers: {
-            "Content-Type": "application/json", Accept: "text/event-stream", ...chatHeaders(),
+            "Content-Type": "application/json", Accept: "text/event-stream", ...chatHeaders(), ...thinkHeaders,
             ...(cont ? { "X-HIVI-Continue": "1" } : {}),
           },
           body: JSON.stringify(payload),
@@ -5747,6 +6122,7 @@
       if (file) takeImageFile(file);
     });
     modelSelect.addEventListener("change", () => {
+      if (modelInfoOpen) renderModelInfo();
       userPickedModel = modelSelect.value !== activeModelId;
       updateLoadBtn();
     });

@@ -52,6 +52,7 @@ from runtime import (
     STATE,
     SWITCH_LOCK,
     backend_model_name,
+    context_for,
     note_speed,
     note_switch_wait,
     select_model,
@@ -307,8 +308,15 @@ async def api_files_zip(request: Request):
 
 @app.get("/api/models")
 def api_models(kind: str = "chat"):
-    """Chat models by default; ?kind=embedding|reranker|all for the rest."""
-    return {"models": models_as_dicts(None if kind == "all" else kind)}
+    """Chat models by default; ?kind=embedding|reranker|all for the rest.
+
+    Each model also says the window HIVI runs it with (run_ctx, from runtime.context_for).
+    """
+    out = models_as_dicts(None if kind == "all" else kind)
+    for m in out:
+        entry = get_model(m["id"])
+        m["run_ctx"] = context_for(entry) if entry else None
+    return {"models": out}
 
 
 @app.get("/api/roles")
@@ -1786,6 +1794,8 @@ _FILL_INTENTS = ("coding", "writing", "architecture")
 def _fills_window(extra: dict[str, str], request: Request) -> bool:
     if request.headers.get("x-hivi-continue") == "1":
         return True
+    if request.headers.get("x-hivi-think") == "on":
+        return True   # thinking forced on from the UI: room for the reasoning and the answer
     intents = (extra.get("X-HIVI-HAIE-Intents") or "").split(",")
     return any(i.strip() in _FILL_INTENTS for i in intents)
 
